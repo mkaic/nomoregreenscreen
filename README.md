@@ -6,4 +6,4 @@
 	my mediocre storytelling abilities). That VFX frequently involves dealing with green
 screen. Green screen is a pain to use.</p>
 
-<p>AI is cool, I'll just use that instead.</p>
+<p>AI is cool, I'll just use that instead. At least I hope. I'm still very new to this.</p>
