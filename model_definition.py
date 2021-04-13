@@ -29,9 +29,9 @@ class IdentityBlock(nn.Module):
 		X = self.conv1(X)
 		X = self.activation(X)
 		X = self.conv2(X)
-		X = self.activation(X)
-
+	
 		X = torch.add(X, skipped_X)
+		X = self.activation(X)
 
 		return X
 
@@ -200,7 +200,7 @@ class MatteRefinementNetwork(nn.Module):
 		patches = torch.zeros(fake_coarse_alpha.shape[0], self.concat_channels, 8, 8)
 
 		#This part has to be done without batches for simplicity's sake.
-		patches = torch.zeros(fake_coarse_error.shape[0] * K)
+		patches = torch.zeros(fake_coarse_error.shape[0] * K, 8, 8)
 		for idx in range(fake_coarse_error.shape[0]):
 
 			current_example_to_refine = super_upsampled_coarse_alpha[idx:idx+1, :, :, :]
