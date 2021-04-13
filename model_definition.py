@@ -151,13 +151,10 @@ class CoarseMatteGenerator(nn.Module):
 
 
 
-class MatteRefinementNetwork(nn.Module):
+class RefinePatches(nn.Module):
 
-	def __init__(self, coarse_channels, input_channels, output_channels = 1, chan = 32, patch_size = 8, device = 'cpu'):
+	def __init__(self, coarse_channels, input_channels, output_channels = 1, chan = 32, patch_size = 8):
 		super().__init__()
-
-		self.patch_size = patch_size
-		self.device = device
 
 		self.input_channels = input_channels
 		self.coarse_channels = coarse_channels
@@ -171,127 +168,22 @@ class MatteRefinementNetwork(nn.Module):
 
 		self.activation = nn.ReLU()
 
-	#This is a simple utility function for grabbing a square patch of an image tensor of dimensions N x C x H x W.
-	def get_image_patch(self, image, patch_size, top_left_corner):
 
-		patch = image[:, :, top_left_corner[0] : top_left_corner[0] + patch_size, top_left_corner[1] : top_left_corner[1] + patch_size]
-		return patch
+	def forward(self, start_patches, middle_patches):
 
-	def replace_image_patch(self, image, patch, top_left_corner):
+		z1 = self.conv1(start_patches)
+		x1 = self.activation(z1)
 
-		size = patch.shape[-1]
-		image[:, :, top_left_corner[0]:top_left_corner[0]+size, top_left_corner[1]:top_left_corner[1]+size] = patch
+		z2 = self.conv2(x1)
+		x2 = self.activation(z2)
 
-		return image
+		z3 = torch.cat([x2, middle_patches], 1)
+		z3 = self.conv3(z3)
+		x3 = self.activation(z3)
 
-	def forward(self, fake_coarse_alpha, fake_coarse_error, fake_coarse_hidden, input_tensor):
+		z4 = self.conv4(x3)
 
-		super_upsampled_coarse_alpha = F.interpolate(fake_coarse_alpha, [input_tensor.shape[-2], input_tensor.shape[-1]])
+		end_patches = z4
 
+		return end_patches
 
-		#We need a downsampled version of the input for the refinement to take patches out of.
-		downsampled_input = F.interpolate(input_tensor, size = [input_tensor.shape[-2]//2, input_tensor.shape[-1]//2])
-		#We need to *upsample* the coarse outputs tho.
-		upsampled_coarse_alpha = F.interpolate(fake_coarse_alpha, size = [input_tensor.shape[-2]//2, input_tensor.shape[-1]//2])
-		upsampled_coarse_hidden = F.interpolate(fake_coarse_hidden, size = [input_tensor.shape[-2]//2, input_tensor.shape[-1]//2])
-
-		upsampled_coarse = torch.cat([upsampled_coarse_alpha, upsampled_coarse_hidden], 1)
-
-		patches = torch.zeros(fake_coarse_alpha.shape[0], self.concat_channels, 8, 8)
-
-		#This part has to be done without batches for simplicity's sake.
-		patches = torch.zeros(fake_coarse_error.shape[0] * K, 8, 8)
-		for idx in range(fake_coarse_error.shape[0]):
-
-			current_example_to_refine = super_upsampled_coarse_alpha[idx:idx+1, :, :, :]
-			values, indices = torch.topk(fake_coarse_error[idx:idx+1, :, :, :].flatten(), k = self.K)
-			#print(fake_coarse_error[idx:idx+1, :, :, :].flatten().shape)
-			#print(indices.shape)
-			low_confidence = np.array(np.unravel_index(indices.cpu().numpy(), fake_coarse_error[idx:idx+1, :, :, :].shape)).T
-			print(low_confidence.shape)
-
-
-
-			for index in low_confidence:
-
-				top_left_corner = torch.clamp(torch.tensor([(index[-2] * 2) - 4, (index[-1] * 2) - 4]), min = 0, max = upsampled_coarse.shape[-1] - 8).to(self.device)
-				print(top_left_corner)
-
-				coarse_patch = self.get_image_patch(upsampled_coarse[idx:idx+1, :, :, :], 8, top_left_corner)
-				#print(coarse_patch.shape)
-				input_patch = self.get_image_patch(downsampled_input[idx:idx+1, :, :, :], 8, top_left_corner)
-				#print(input_patch.shape)
-				start_patch = torch.cat([coarse_patch, input_patch], 1)
-				#print(start_patch.shape)
-
-
-
-				x1 = self.conv1(start_patch)
-				x1 = self.activation(x1)
-
-				x2 = self.conv2(x1)
-				x2 = self.activation(x2)
-				x2 = F.interpolate(x2, [8,8])
-
-				top_left_corner = [top_left_corner[0] * 2, top_left_corner[1] * 2]
-
-				middle_input_patch = self.get_image_patch(input_tensor[idx:idx+1, :, :, :], 8, top_left_corner)
-				middle_concat = torch.cat([x2, middle_input_patch], 1)
-				#print(middle_concat.shape)
-
-				x3 = self.conv3(middle_concat)
-				x3 = self.activation(x3)
-				final_patch = self.conv4(x3)
-				#final_patch = torch.sigmoid(final_patch)
-				
-				top_left_corner = [top_left_corner[0] + 2, top_left_corner[1] + 2]
-				current_example_to_refine = self.replace_image_patch(current_example_to_refine, final_patch,top_left_corner)
-
-			super_upsampled_coarse_alpha[idx] = current_example_to_refine
-
-		return super_upsampled_coarse_alpha
-
-
-"""
-class AlphaMatteGenerator(nn.Module):
-
-	def __init__(self):
-		super().__init__()
-
-		self.coarse = CoarseMatteGenerator(input_channels = input_channels, output_channels = 2, chan = 64).train().to(device)
-		self.refine = MatteRefinementNetwork()
-
-	def forward(self, input_tensor):
-
-		
-		real_coarse_alpha = F.interpolate(real_alpha, size = [real_alpha.shape[-2]//4, real_alpha.shape[-1]//4])
-
-		
-		fake = coarse(input_tensor)
-		fake_coarse_alpha = fake[:,0:1,:,:]
-		fake_coarse_error = fake[:,1:2,:,:]
-		fake_coarse_hidden = fake[:,2:,:,:]
-
-		real_coarse_error = torch.square(real_coarse_alpha.detach()-fake_coarse_alpha.detach())
-		
-		fake_refined_alpha = refine(fake_coarse_alpha, fake_coarse_error, input_tensor)
-
-		coarse_opt = torch.optim.Adam(coarse.parameters(), lr = learning_rate)
-		refine_opt = torch.optim.Adam(refine.parameters(), lr = learning_rate)
-
-		coarse_loss = bce_loss(fake_coarse_alpha, real_coarse_alpha) + bce_loss(fake_coarse_error, real_coarse_error)
-		refine_loss = bce_loss(fake_refined_alpha, real_alpha)
-
-		total_loss = coarse_loss + refine_loss
-
-		coarse_opt.zero_grad()
-		total_loss.backward()
-		coarse_opt.step()
-
-		coarse_opt.zero_grad()
-		total_loss.backward()
-		coarse_opt.step()
-		
-
-		return
-"""
