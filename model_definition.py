@@ -215,7 +215,7 @@ class MatteRefinementNetwork(nn.Module):
 			for index in low_confidence:
 
 				top_left_corner = torch.clamp(torch.tensor([(index[-2] * 2) - 4, (index[-1] * 2) - 4]), min = 0, max = upsampled_coarse.shape[-1] - 8).to(self.device)
-				#print(top_left_corner)
+				print(top_left_corner)
 
 				coarse_patch = self.get_image_patch(upsampled_coarse[idx:idx+1, :, :, :], 8, top_left_corner)
 				#print(coarse_patch.shape)
