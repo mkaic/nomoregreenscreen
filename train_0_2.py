@@ -155,7 +155,7 @@ for epoch in range(20):
 	print(f'Epoch: {epoch}')
 
 	#Get an example from the dataset.
-	for input_tensor, real_alpha in tqdm(loader):
+	for input_tensor, real_alpha in loader:
 
 		with torch.cuda.amp.autocast(enabled = use_amp):
 
@@ -228,29 +228,29 @@ for epoch in range(20):
 			if(iteration % 25 == 0 and iteration < schedule1):
 				image = fake_coarse_alpha[0,:, :, :].clone().to('cpu')
 				image = transforms.ToPILImage()(image)
-				image.save(f'outputs6/{iteration}fake_coarse_alpha.jpg')
+				image.save(f'outputs7/{iteration}fake_coarse_alpha.jpg')
 
 				image = real_alpha[0]
 				image = transforms.ToPILImage()(image)
-				image.save(f'outputs6/{iteration}real_alpha.jpg')
+				image.save(f'outputs7/{iteration}real_alpha.jpg')
 
 			"""
 			if(iteration % 100 == 0 and iteration > schedule1):
 				image = fake_coarse_alpha[0,:, :, :].clone().to('cpu')
 				image = transforms.ToPILImage()(image)
-				image.save(f'outputs6/{iteration}fake_coarse_alpha.jpg')
+				image.save(f'outputs7/{iteration}fake_coarse_alpha.jpg')
 
 				image = fake_refined_alpha[0,:,:,:].clone().to('cpu')
 				image = transforms.ToPILImage()(image)
-				image.save(f'outputs6/{iteration}fake_refined_alpha.jpg')
+				image.save(f'outputs7/{iteration}fake_refined_alpha.jpg')
 
 				image = fake_coarse_error[0,:, :, :].clone().to('cpu')
 				image = transforms.ToPILImage()(image)
-				image.save(f'outputs6/{iteration}fake_coarse_error.jpg')
+				image.save(f'outputs7/{iteration}fake_coarse_error.jpg')
 
 				image = real_alpha[0]
 				image = transforms.ToPILImage()(image)
-				image.save(f'outputs6/{iteration}real_alpha.jpg')
+				image.save(f'outputs7/{iteration}real_alpha.jpg')
 			"""
 
 			if(iteration % 1000 == 0):

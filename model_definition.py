@@ -43,11 +43,12 @@ class IdentityBlock(nn.Module):
 
 class SkipConnDownChannel(nn.Module):
 
-	def __init__(self, input_channels, output_channels):
+	def __init__(self, input_channels, output_channels, final_activation = True):
 		super().__init__()
 
 		self.input_channels = input_channels
 		self.activation = nn.ReLU()
+		self.final_activation = final_activation
 
 		self.input_down_channel = nn.Conv2d(input_channels, input_channels//2, kernel_size = 1)
 		self.skip_down_channel = nn.Conv2d(input_channels, input_channels//2, kernel_size = 1)
@@ -74,7 +75,9 @@ class SkipConnDownChannel(nn.Module):
 		concatenated = self.activation(concatenated)
 		concatenated = self.concatenated_conv(concatenated)
 		concatenated = self.bn2(concatenated)
-		concatenated = self.activation(concatenated)
+
+		if(self.final_activation):
+			concatenated = self.activation(concatenated)
 
 		return concatenated
 
@@ -102,7 +105,7 @@ class CoarseMatteGenerator(nn.Module):
 		self.downchannel1 = SkipConnDownChannel(chan*8, chan*4)
 		self.downchannel2 = SkipConnDownChannel(chan*4, chan*2)
 		self.downchannel3 = SkipConnDownChannel(chan*2, chan)
-		self.downchannel4 = SkipConnDownChannel(chan, output_channels)
+		self.downchannel4 = SkipConnDownChannel(chan, output_channels, final_activation = False)
 
 		
 
