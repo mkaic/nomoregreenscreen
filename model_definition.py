@@ -1,14 +1,9 @@
 
 import torch
 import torch.nn as nn
-import torchvision
-import torchvision.transforms as transforms
-import torchvision.transforms.functional as TF
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
-import os
 from PIL import Image
-import numpy as np
 import time
 from tqdm import tqdm
 
@@ -18,19 +13,29 @@ class IdentityBlock(nn.Module):
 	def __init__(self, channels):
 		super().__init__()
 
-		self.activation = nn.LeakyReLU(0.1)
+		self.activation = nn.ReLU()
 		self.conv1 = nn.Conv2d(channels, channels, kernel_size = 1)
-		self.conv2 = nn.Conv2d(channels, channels, kernel_size = 3, padding = 1)
+		self.conv2 = nn.Conv2d(channels, channels, kernel_size = 3)
+		self.skipconv = nn.Conv2d(channels, channels, kernel_size = 3)
+
+		self.bn1 = nn.BatchNorm2d(channels)
+		self.bn2 = nn.BatchNorm2d(channels)
+		self.bn3 = nn.BatchNorm2d(channels)
 
 	def forward(self, X):
 
 		skipped_X = X
 
 		X = self.conv1(X)
+		X = self.bn1(X)
 		X = self.activation(X)
 		X = self.conv2(X)
+
+		skipped_X = self.skipconv(skipped_X)
+		X = self.bn2(X)
 	
 		X = torch.add(X, skipped_X)
+		X = self.bn3(X)
 		X = self.activation(X)
 
 		return X
@@ -42,13 +47,15 @@ class SkipConnDownChannel(nn.Module):
 		super().__init__()
 
 		self.input_channels = input_channels
-		self.activation = nn.LeakyReLU(0.1)
+		self.activation = nn.ReLU()
 
 		self.input_down_channel = nn.Conv2d(input_channels, input_channels//2, kernel_size = 1)
 		self.skip_down_channel = nn.Conv2d(input_channels, input_channels//2, kernel_size = 1)
+		self.bn1 = nn.BatchNorm2d(input_channels//2)
 
-		self.concatenated_down_channel = nn.Conv2d(input_channels, input_channels//2, kernel_size = 3, padding = 1)
-		self.concatenated_conv = nn.Conv2d(input_channels//2, output_channels, kernel_size = 3, padding = 1)
+		self.concatenated_down_channel = nn.Conv2d(input_channels, input_channels//2, kernel_size = 3)
+		self.concatenated_conv = nn.Conv2d(input_channels//2, output_channels, kernel_size = 3)
+		self.bn2 = nn.BatchNorm2d(output_channels)
 
 
 	def forward(self, X, skipped_X):
@@ -57,13 +64,16 @@ class SkipConnDownChannel(nn.Module):
 		X = self.activation(X)
 
 		skipped_X = self.skip_down_channel(skipped_X)
+		skipped_X = self.bn1(skipped_X)
 		skipped_X = self.activation(skipped_X)
 
+		skipped_X = F.interpolate(skipped_X, size = [X.shape[-2], X.shape[-1]])
 		concatenated = torch.cat([X, skipped_X], 1)
 
 		concatenated = self.concatenated_down_channel(concatenated)
 		concatenated = self.activation(concatenated)
 		concatenated = self.concatenated_conv(concatenated)
+		concatenated = self.bn2(concatenated)
 		concatenated = self.activation(concatenated)
 
 		return concatenated
@@ -74,16 +84,16 @@ class CoarseMatteGenerator(nn.Module):
 	def __init__(self, input_channels, output_channels, chan):
 		super().__init__()
 
-		self.upchannel1 = nn.Conv2d(input_channels, chan, kernel_size = 3, padding = 1) 
+		self.upchannel1 = nn.Conv2d(input_channels, chan, kernel_size = 3) 
 		self.ident1 = IdentityBlock(chan)
 
-		self.upchannel2 = nn.Conv2d(chan, chan*2, kernel_size = 3, padding = 1) 
+		self.upchannel2 = nn.Conv2d(chan, chan*2, kernel_size = 3) 
 		self.ident2 = IdentityBlock(chan*2)
 
-		self.upchannel3 = nn.Conv2d(chan*2, chan*4, kernel_size = 3, padding = 1)
+		self.upchannel3 = nn.Conv2d(chan*2, chan*4, kernel_size = 3)
 		self.ident3 = IdentityBlock(chan*4)
 
-		self.upchannel4 = nn.Conv2d(chan*4, chan*8, kernel_size = 3, padding = 1)
+		self.upchannel4 = nn.Conv2d(chan*4, chan*8, kernel_size = 3)
 		self.ident4 = IdentityBlock(chan*8)
 
 		self.middle_conv = nn.Conv2d(chan*8, chan*8, kernel_size = 1)
@@ -161,7 +171,7 @@ class RefinePatches(nn.Module):
 		self.concat_channels = self.input_channels + self.coarse_channels
 
 		#subtracting one from the input channels here because we aren't using the error map as an input
-		self.conv1 = nn.Conv2d(self.concat_channels - 1, chan, kernel_size = 3)
+		self.conv1 = nn.Conv2d(self.concat_channels, chan, kernel_size = 3)
 		self.conv2 = nn.Conv2d(chan, chan*2, kernel_size = 3)
 		self.conv3 = nn.Conv2d(chan*2 + self.input_channels, chan, kernel_size = 3)
 		self.conv4 = nn.Conv2d(chan, output_channels, kernel_size = 3)
@@ -176,6 +186,7 @@ class RefinePatches(nn.Module):
 
 		z2 = self.conv2(x1)
 		x2 = self.activation(z2)
+		x2 = F.interpolate(x2, size = [middle_patches.shape[-2], middle_patches.shape[-1]])
 
 		z3 = torch.cat([x2, middle_patches], 1)
 		z3 = self.conv3(z3)
@@ -183,7 +194,7 @@ class RefinePatches(nn.Module):
 
 		z4 = self.conv4(x3)
 
-		end_patches = z4
+		end_patches = torch.sigmoid(z4)
 
 		return end_patches
 
