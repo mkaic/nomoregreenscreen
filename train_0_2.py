@@ -52,11 +52,11 @@ params = {
 
 }
 
-batch_size = 2
+batch_size = 4
 
 #Initialize the dataset and the loader to feed the data to the network.
 dataset = MatteDataset(**params)
-loader = DataLoader(dataset, batch_size = batch_size, shuffle = True, num_workers = 4, pin_memory = True)
+loader = DataLoader(dataset, batch_size = batch_size, shuffle = True, num_workers = 2, pin_memory = True)
 
 
 print('Initializing Network...')
@@ -69,7 +69,7 @@ coarse = CoarseMatteGenerator(input_channels = input_channels, output_channels =
 #... which we will then feed to the refinement network to upsample and refine the area of least confidence.
 refine = RefinePatches(input_channels = input_channels, coarse_channels = num_hidden_channels + 2, output_channels = 1, chan = 32).train().to(device)
 
-learning_rate = 0.00001
+learning_rate = 0.000005
 
 use_amp = False
 
@@ -77,7 +77,7 @@ use_amp = False
 criterion = nn.L1Loss()
 
 #This is a simple utility function for grabbing a square patch of an image tensor of dimensions N x C x H x W.
-def get_image_patches(images, error_maps, k, patch_size = 8, stride = 4):
+def get_image_patches(images, error_maps, k, patch_size = 6, stride = 4):
 
 	#store the original shape
 	b, c, h, w = error_maps.shape
@@ -146,6 +146,10 @@ def replace_image_patches(images, patches, indices):
 
 	return patched_image
 
+def color_ramp(a, b, image):
+
+	return torch.clamp((1/b - a) * image + (a/(a-b)), 0, 1)
+
 #track how many batches have been done for things like periodic outputs and eventually scheduling.
 iteration = 0
 schedule1 = 1000
@@ -155,7 +159,7 @@ for epoch in range(20):
 	print(f'Epoch: {epoch}')
 
 	#Get an example from the dataset.
-	for input_tensor, real_alpha in loader:
+	for input_tensor, real_alpha in tqdm(loader):
 
 		with torch.cuda.amp.autocast(enabled = use_amp):
 
@@ -163,7 +167,7 @@ for epoch in range(20):
 
 			#Generate a fake coarse alpha, along with a guessed error map and some hidden channel data. Oh yeah and the foreground residual
 			fake_coarse = F.interpolate(coarse(input_tensor), size = [input_tensor.shape[-2]//4, input_tensor.shape[-1]//4])
-			fake_coarse_alpha = torch.sigmoid(fake_coarse[:,0:1,:,:])
+			fake_coarse_alpha = color_ramp(0.1, 0.9, torch.sigmoid(fake_coarse[:,0:1,:,:]))
 			fake_coarse_error = torch.sigmoid(fake_coarse[:,1:2,:,:])
 			#fake_coarse_foreground_residual = fake_coarse[:,2:5,:,:]
 			fake_coarse_hidden_channels = torch.relu(fake_coarse[:,5:,:,:])
@@ -176,7 +180,6 @@ for epoch in range(20):
 
 			#The loss of the coarse network is the pixel difference between the real and fake coarse alphas and error maps added together.
 			coarse_loss = criterion(fake_coarse_alpha, real_coarse_alpha) + criterion(fake_coarse_error,real_coarse_error)
-			print(coarse_loss)
 
 			#if it's before the training cutoff, then the loss is just for the coarse network.
 			loss = coarse_loss
@@ -225,7 +228,9 @@ for epoch in range(20):
 			iteration += 1
 
 
-			if(iteration % 25 == 0 and iteration < schedule1):
+
+
+			if(iteration % 100 == 0):
 				image = fake_coarse_alpha[0,:, :, :].clone().to('cpu')
 				image = transforms.ToPILImage()(image)
 				image.save(f'outputs7/{iteration}fake_coarse_alpha.jpg')
@@ -233,6 +238,10 @@ for epoch in range(20):
 				image = real_alpha[0]
 				image = transforms.ToPILImage()(image)
 				image.save(f'outputs7/{iteration}real_alpha.jpg')
+
+				print(coarse_loss)
+
+				
 
 			"""
 			if(iteration % 100 == 0 and iteration > schedule1):
@@ -253,8 +262,8 @@ for epoch in range(20):
 				image.save(f'outputs7/{iteration}real_alpha.jpg')
 			"""
 
-			if(iteration % 1000 == 0):
-				learning_rate *= 0.95
+			if(iteration % 500 == 0):
+				learning_rate *= 0.9
 
 
 
