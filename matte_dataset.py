@@ -80,7 +80,7 @@ class MatteDataset(Dataset):
 
 		return frames_tensor
 
-	def data_to_input(self, bg_tensor, fg_tensor, bprime_tensor):
+	def augment(self, bg_tensor, fg_tensor):
 
 		#All input tensors assumed to be single examples with dimensions Time x Channels x Height x Width
 
@@ -116,6 +116,8 @@ class MatteDataset(Dataset):
 		corr_fg_tensor = torch.zeros(fg_shape[0], 3, fg_shape[2], fg_shape[3])
 		corr_alpha_tensor = torch.zeros(fg_shape[0], 1, fg_shape[2], fg_shape[3])
 
+		do_horizontal_flip = np.random.rand() > 0.5
+
 		for idx in range(bg_tensor.shape[0]):
 
 			corr_bg_params = {
@@ -134,6 +136,9 @@ class MatteDataset(Dataset):
 
 			}
 			corr_bg_tensor[idx, :, :, :] = TF.affine(**corr_bg_params)
+			if(do_horizontal_flip):
+				corr_bg_tensor[idx, :, :, :] = TF.hflip(corr_bg_tensor[idx, :, :, :])
+		
 
 
 			corr_png_params = {
@@ -152,6 +157,8 @@ class MatteDataset(Dataset):
 
 			}
 			corr_png_tensor[idx, :, :, :] = TF.affine(**corr_png_params)
+			if(do_horizontal_flip):
+				corr_png_tensor[idx, :, :, :] = TF.hflip(corr_png_tensor[idx, :, :, :])
 			
 			corr_fg_tensor[idx, :, :, :] = corr_png_tensor[idx, :3, :, :]
 			corr_alpha_tensor[idx, :, :, :] = corr_png_tensor[idx, 3:4, :, :]
@@ -164,22 +171,19 @@ class MatteDataset(Dataset):
 		if do_shadow:
 			corr_bg_tensor = self.shadow_augment(corr_bg_tensor, corr_alpha_tensor)
 
+		"""
 		#composite the warped foreground onto the warped background according to the warped alpha
 		composite_tensor = self.composite(corr_bg_tensor, corr_fg_tensor, corr_alpha_tensor)
 
 		#generate the "channel-block" version of the input, which no longer contains separate images and is just a blob of channels.
 		input_tensor = torch.cat([composite_tensor, bprime_tensor], dim = 0)
 		alpha_tensor = corr_alpha_tensor
+		"""
 	
 
-		return input_tensor, alpha_tensor
+		return corr_fg_tensor, corr_bg_tensor, corr_alpha_tensor
 
 	#Does what it says on the box. Takes in a background, foreground, and alpha, and composites them into one image accordingly.
-	def composite(self, bg_tensor, fg_tensor, alpha_tensor):
-
-		composite = (alpha_tensor * fg_tensor) + ((1 - alpha_tensor) * bg_tensor)
-
-		return composite
 
 	def shadow_augment(self, bg_tensor, alpha_tensor):
 
@@ -250,14 +254,11 @@ class MatteDataset(Dataset):
 		#retrieve frame packets for the foreground and alpha with the context depth and stride as passed to __init__()
 		fg_tensor = self.get_frames_tensor(fg_clip_dir, fg_center, self.comp_context_depth, self.comp_context_stride)
 
-		input_tensor, alpha_tensor = self.data_to_input(bg_tensor, fg_tensor, bprime_tensor)
+		fg_tensor, bg_tensor, alpha_tensor = self.augment(bg_tensor, fg_tensor)
 
-		#return the input tensor (composite plus b-prime) and the alpha_tensor. The input tensor is just a bunch of channels, the real_alpha is the central (singular) alpha
-		#corresponding to the target frame.
-		input_tensor = input_tensor.view(-1, input_tensor.shape[-2], input_tensor.shape[-1])
-		real_alpha = alpha_tensor[self.comp_context_depth]
+		
 
-		return input_tensor, real_alpha
+		return fg_tensor, bg_tensor, alpha_tensor, bprime_tensor
 
 	def __len__(self):
 

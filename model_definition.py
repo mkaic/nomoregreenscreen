@@ -18,24 +18,20 @@ class IdentityBlock(nn.Module):
 		self.conv2 = nn.Conv2d(channels, channels, kernel_size = 3)
 		self.skipconv = nn.Conv2d(channels, channels, kernel_size = 3)
 
-		self.bn1 = nn.BatchNorm2d(channels)
-		self.bn2 = nn.BatchNorm2d(channels)
-		self.bn3 = nn.BatchNorm2d(channels)
+		self.bn = nn.BatchNorm2d(channels)
 
 	def forward(self, X):
 
 		skipped_X = X
 
 		X = self.conv1(X)
-		X = self.bn1(X)
 		X = self.activation(X)
 		X = self.conv2(X)
 
 		skipped_X = self.skipconv(skipped_X)
-		X = self.bn2(X)
 	
 		X = torch.add(X, skipped_X)
-		X = self.bn3(X)
+		X = self.bn(X)
 		X = self.activation(X)
 
 		return X
@@ -52,11 +48,10 @@ class SkipConnDownChannel(nn.Module):
 
 		self.input_down_channel = nn.Conv2d(input_channels, input_channels//2, kernel_size = 1)
 		self.skip_down_channel = nn.Conv2d(input_channels, input_channels//2, kernel_size = 1)
-		self.bn1 = nn.BatchNorm2d(input_channels//2)
 
 		self.concatenated_down_channel = nn.Conv2d(input_channels, input_channels//2, kernel_size = 3)
 		self.concatenated_conv = nn.Conv2d(input_channels//2, output_channels, kernel_size = 3)
-		self.bn2 = nn.BatchNorm2d(output_channels)
+		self.bn = nn.BatchNorm2d(output_channels)
 
 
 	def forward(self, X, skipped_X):
@@ -65,7 +60,6 @@ class SkipConnDownChannel(nn.Module):
 		X = self.activation(X)
 
 		skipped_X = self.skip_down_channel(skipped_X)
-		skipped_X = self.bn1(skipped_X)
 		skipped_X = self.activation(skipped_X)
 
 		skipped_X = F.interpolate(skipped_X, size = [X.shape[-2], X.shape[-1]])
@@ -74,7 +68,7 @@ class SkipConnDownChannel(nn.Module):
 		concatenated = self.concatenated_down_channel(concatenated)
 		concatenated = self.activation(concatenated)
 		concatenated = self.concatenated_conv(concatenated)
-		concatenated = self.bn2(concatenated)
+		concatenated = self.bn(concatenated)
 
 		if(self.final_activation):
 			concatenated = self.activation(concatenated)
