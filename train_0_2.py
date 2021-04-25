@@ -65,7 +65,7 @@ input_channels = ((dataset_params['comp_context_depth'] * 2 + 1) + (dataset_para
 num_hidden_channels = 0
 
 #Initialize the network which will produce a coarse alpha (1 chan), confidence map (1 chan), and a number of hidden channels (num_hidden_channels chan)...
-coarse = CoarseMatteGenerator(input_channels = input_channels, output_channels = num_hidden_channels + 5, chan = 32).train().to(device)
+coarse = CoarseMatteGenerator(input_channels = input_channels, output_channels = num_hidden_channels + 5, chan = 64).train().to(device)
 #... which we will then feed to the refinement network to upsample and refine the area of least confidence.
 refine = RefinePatches(input_channels = input_channels, coarse_channels = num_hidden_channels + 2, output_channels = 1, chan = 32).train().to(device)
 
@@ -192,7 +192,7 @@ for epoch in range(20):
 
 			#Generate a fake coarse alpha, along with a guessed error map and some hidden channel data. Oh yeah and the foreground residual
 			fake_coarse = F.interpolate(coarse(input_tensor), size = [input_tensor.shape[-2]//4, input_tensor.shape[-1]//4])
-			fake_coarse_alpha = color_ramp(0.1, 0.9, torch.sigmoid(fake_coarse[:,0:1,:,:]))
+			fake_coarse_alpha = color_ramp(0.1, 0.9, torch.clamp(fake_coarse[:,0:1,:,:], 0, 1))
 			fake_coarse_error = torch.sigmoid(fake_coarse[:,1:2,:,:])
 			fake_coarse_foreground_residual = fake_coarse[:,2:5,:,:]
 

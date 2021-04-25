@@ -39,12 +39,12 @@ class IdentityBlock(nn.Module):
 
 class SkipConnDownChannel(nn.Module):
 
-	def __init__(self, input_channels, output_channels, final_activation = True):
+	def __init__(self, input_channels, output_channels, final = False):
 		super().__init__()
 
 		self.input_channels = input_channels
 		self.activation = nn.ReLU()
-		self.final_activation = final_activation
+		self.final = final
 
 		self.input_down_channel = nn.Conv2d(input_channels, input_channels//2, kernel_size = 1)
 		self.skip_down_channel = nn.Conv2d(input_channels, input_channels//2, kernel_size = 1)
@@ -69,8 +69,10 @@ class SkipConnDownChannel(nn.Module):
 		concatenated = self.activation(concatenated)
 		concatenated = self.concatenated_conv(concatenated)
 		concatenated = self.bn(concatenated)
+		
 
-		if(self.final_activation):
+		if(not self.final):
+			
 			concatenated = self.activation(concatenated)
 
 		return concatenated
@@ -90,16 +92,19 @@ class CoarseMatteGenerator(nn.Module):
 		self.upchannel3 = nn.Conv2d(chan*2, chan*4, kernel_size = 3)
 		self.ident3 = IdentityBlock(chan*4)
 
-		self.upchannel4 = nn.Conv2d(chan*4, chan*8, kernel_size = 3)
-		self.ident4 = IdentityBlock(chan*8)
 
-		self.middle_conv = nn.Conv2d(chan*8, chan*8, kernel_size = 1)
+		self.aspp = nn.Sequential(
+
+			nn.Conv2d(chan*4, chan*4, kernel_size = 3, dilation = 3),
+			nn.Conv2d(chan*4, chan*4, kernel_size = 3, dilation = 6),
+			nn.Conv2d(chan*4, chan*4, kernel_size = 3, dilation = 9)
+			)
+
 		self.activation = nn.ReLU()
 
-		self.downchannel1 = SkipConnDownChannel(chan*8, chan*4)
-		self.downchannel2 = SkipConnDownChannel(chan*4, chan*2)
-		self.downchannel3 = SkipConnDownChannel(chan*2, chan)
-		self.downchannel4 = SkipConnDownChannel(chan, output_channels, final_activation = False)
+		self.downchannel1 = SkipConnDownChannel(chan*4, chan*2)
+		self.downchannel2 = SkipConnDownChannel(chan*2, chan)
+		self.downchannel3 = SkipConnDownChannel(chan, output_channels, final = True)
 
 		
 
@@ -110,51 +115,41 @@ class CoarseMatteGenerator(nn.Module):
 		channels = input_tensor.shape[1]
 		height = input_tensor.shape[-2]
 		width = input_tensor.shape[-1]
-		half_shape = [height//2, width//2]
-		quarter_shape = [height//4, width//4]
-		eighth_shape = [height//8, width//8]
-		sixteenth_shape = [height//16, width//16]
-		thirty_second_shape = [height//32, width//32]
+		shape_half = [height//2, width//2]
+		shape_4th = [height//4, width//4]
+		shape_8th = [height//8, width//8]
+		shape_16th = [height//16, width//16]
+		shape_32nd = [height//32, width//32]
 
-		X = F.interpolate(input_tensor, size = quarter_shape)
-
+		X = F.interpolate(input_tensor, size = shape_4th)
 		X1 = self.upchannel1(X)
 		X1 = self.activation(X1)
 		X1 = self.ident1(X1)
 
-		X2 = F.interpolate(X1, size = eighth_shape)
+		X2 = F.interpolate(X1, size = shape_8th)
 		X2 = self.upchannel2(X2)
 		X2 = self.activation(X2)
 		X2 = self.ident2(X2)
 
-		X3 = F.interpolate(X2, size = sixteenth_shape)
+		X3 = F.interpolate(X2, size = shape_16th)
 		X3 = self.upchannel3(X3)
 		X3 = self.activation(X3)
-		X3 = self.ident3(X3)
+		X4 = self.ident3(X3)
 
-		X4 = F.interpolate(X3, size = thirty_second_shape)
-		X4 = self.upchannel4(X4)
-		X4 = self.activation(X4)
-		X4 = self.ident4(X4)
-
-		middle = self.middle_conv(X4)
+		middle = self.aspp(X4)
 		middle = self.activation(middle)
 
-		X5 = self.downchannel1(middle, X4)
-		X5 = F.interpolate(X5, size = sixteenth_shape)
+		X5 = self.downchannel1(middle, X3)
 
-		X6 = self.downchannel2(X5, X3)
-		X6 = F.interpolate(X6, size = eighth_shape)
+		X5 = F.interpolate(X5, size = shape_8th)
+		X6 = self.downchannel2(X5, X2)
 
+		X6 = F.interpolate(X6, size = shape_4th)
+		X7 = self.downchannel3(X6, X1)
 
-		X7 = self.downchannel3(X6, X2)
-		X7 = F.interpolate(X7, size = quarter_shape)
-
-
-		X8 = self.downchannel4(X7, X1)
 		#X8 = torch.sigmoid(X8)
 
-		return X8
+		return X7
 
 
 

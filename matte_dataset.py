@@ -116,7 +116,9 @@ class MatteDataset(Dataset):
 		corr_fg_tensor = torch.zeros(fg_shape[0], 3, fg_shape[2], fg_shape[3])
 		corr_alpha_tensor = torch.zeros(fg_shape[0], 1, fg_shape[2], fg_shape[3])
 
-		do_horizontal_flip = np.random.rand() > 0.5
+		do_bg_horizontal_flip = np.random.rand() > 0.5
+		do_fg_horizontal_flip = np.random.rand() > 0.5
+		do_bg_time_reverse = np.random.rand() > 0.5
 
 		for idx in range(bg_tensor.shape[0]):
 
@@ -136,7 +138,7 @@ class MatteDataset(Dataset):
 
 			}
 			corr_bg_tensor[idx, :, :, :] = TF.affine(**corr_bg_params)
-			if(do_horizontal_flip):
+			if(do_bg_horizontal_flip):
 				corr_bg_tensor[idx, :, :, :] = TF.hflip(corr_bg_tensor[idx, :, :, :])
 		
 
@@ -157,7 +159,7 @@ class MatteDataset(Dataset):
 
 			}
 			corr_png_tensor[idx, :, :, :] = TF.affine(**corr_png_params)
-			if(do_horizontal_flip):
+			if(do_fg_horizontal_flip):
 				corr_png_tensor[idx, :, :, :] = TF.hflip(corr_png_tensor[idx, :, :, :])
 			
 			corr_fg_tensor[idx, :, :, :] = corr_png_tensor[idx, :3, :, :]
@@ -170,6 +172,8 @@ class MatteDataset(Dataset):
 
 		if do_shadow:
 			corr_bg_tensor = self.shadow_augment(corr_bg_tensor, corr_alpha_tensor)
+		if(do_bg_time_reverse):
+			corr_bg_tensor = torch.flip(corr_bg_tensor, [0])
 
 		"""
 		#composite the warped foreground onto the warped background according to the warped alpha
