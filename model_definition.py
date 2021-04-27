@@ -15,8 +15,8 @@ class IdentityBlock(nn.Module):
 
 		self.activation = nn.ReLU()
 		self.conv1 = nn.Conv2d(channels, channels, kernel_size = 1)
-		self.conv2 = nn.Conv2d(channels, channels, kernel_size = 3)
-		self.skipconv = nn.Conv2d(channels, channels, kernel_size = 3)
+		self.conv2 = nn.Conv2d(channels, channels, kernel_size = 5)
+		self.skipconv = nn.Conv2d(channels, channels, kernel_size = 5)
 
 		self.bn = nn.BatchNorm2d(channels)
 
@@ -49,8 +49,8 @@ class SkipConnDownChannel(nn.Module):
 		self.input_down_channel = nn.Conv2d(input_channels, input_channels//2, kernel_size = 1)
 		self.skip_down_channel = nn.Conv2d(input_channels, input_channels//2, kernel_size = 1)
 
-		self.concatenated_down_channel = nn.Conv2d(input_channels, input_channels//2, kernel_size = 3)
-		self.concatenated_conv = nn.Conv2d(input_channels//2, output_channels, kernel_size = 3)
+		self.concatenated_down_channel = nn.Conv2d(input_channels, input_channels//2, kernel_size = 5)
+		self.concatenated_conv = nn.Conv2d(input_channels//2, output_channels, kernel_size = 5)
 		self.bn = nn.BatchNorm2d(output_channels)
 
 
@@ -121,17 +121,17 @@ class CoarseMatteGenerator(nn.Module):
 		shape_16th = [height//16, width//16]
 		shape_32nd = [height//32, width//32]
 
-		X = F.interpolate(input_tensor, size = shape_4th)
+		
 		X1 = self.upchannel1(X)
 		X1 = self.activation(X1)
 		X1 = self.ident1(X1)
 
-		X2 = F.interpolate(X1, size = shape_8th)
+		X2 = F.interpolate(X1, size = shape_half)
 		X2 = self.upchannel2(X2)
 		X2 = self.activation(X2)
 		X2 = self.ident2(X2)
 
-		X3 = F.interpolate(X2, size = shape_16th)
+		X3 = F.interpolate(X2, size = shape_4th)
 		X3 = self.upchannel3(X3)
 		X3 = self.activation(X3)
 		X4 = self.ident3(X3)
@@ -141,10 +141,10 @@ class CoarseMatteGenerator(nn.Module):
 
 		X5 = self.downchannel1(middle, X3)
 
-		X5 = F.interpolate(X5, size = shape_8th)
+		X5 = F.interpolate(X5, size = shape_half)
 		X6 = self.downchannel2(X5, X2)
 
-		X6 = F.interpolate(X6, size = shape_4th)
+		X6 = F.interpolate(X6, size = [height + 4, width + 4])
 		X7 = self.downchannel3(X6, X1)
 
 		#X8 = torch.sigmoid(X8)

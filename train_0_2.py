@@ -56,7 +56,7 @@ batch_size = 4
 
 #Initialize the dataset and the loader to feed the data to the network.
 dataset = MatteDataset(**dataset_params)
-loader = DataLoader(dataset, batch_size = batch_size, shuffle = True, num_workers = 2, pin_memory = True)
+loader = DataLoader(dataset, batch_size = batch_size, shuffle = True, num_workers = 3, pin_memory = True)
 
 
 print('Initializing Network...')
@@ -148,7 +148,7 @@ def replace_image_patches(images, patches, indices):
 
 def color_ramp(a, b, image):
 
-	return torch.clamp((1/b - a) * image + (a/(a-b)), 0, 1)
+	return torch.clamp(((1/(b - a)) * image) + (a/(a-b)), 0, 1)
 
 def composite(bg_tensor, fg_tensor, alpha_tensor):
 
@@ -169,11 +169,6 @@ for epoch in range(20):
 
 		with torch.cuda.amp.autocast(enabled = use_amp):
 
-			real_foreground = real_foreground.to(device)
-			real_background = real_background.to(device)
-			real_alpha = real_alpha.to(device)
-			real_bprime = real_bprime.to(device)
-
 			#Composite the augmented foreground onto the augmented background according to the augmented alpha.
 			composite_tensor = composite(real_background, real_foreground, real_alpha).view(batch_size, -1, real_foreground.shape[-2], real_foreground.shape[-1])
 			real_bprime = real_bprime.view(batch_size, -1, real_foreground.shape[-2], real_foreground.shape[-1])
@@ -181,6 +176,7 @@ for epoch in range(20):
 			#corresponding to the target frame.
 			input_tensor = torch.cat([composite_tensor, real_bprime], 1)
 			input_tensor = input_tensor.view(batch_size, -1, input_tensor.shape[-2], input_tensor.shape[-1])
+			coarse_input = F.interpolate(input_tensor, size = [input_tensor.shape[-2]//4, input_tensor.shape[-1]//4]).to(device)
 
 			#Grab the center frame of the alpha packet, this is the one we're trying to predict.
 			real_alpha = real_alpha.view(batch_size, -1, input_tensor.shape[-2], input_tensor.shape[-1])
@@ -188,10 +184,10 @@ for epoch in range(20):
 			#print(real_center_alpha.shape)
 
 			#Get a downsampled version of the alpha for grading the coarse network on
-			real_coarse_alpha = F.interpolate(real_center_alpha, size = [real_center_alpha.shape[-2]//4, real_center_alpha.shape[-1]//4])
+			real_coarse_alpha = F.interpolate(real_center_alpha, size = [real_center_alpha.shape[-2]//4, real_center_alpha.shape[-1]//4]).to(device)
 
 			#Generate a fake coarse alpha, along with a guessed error map and some hidden channel data. Oh yeah and the foreground residual
-			fake_coarse = F.interpolate(coarse(input_tensor), size = [input_tensor.shape[-2]//4, input_tensor.shape[-1]//4])
+			fake_coarse = coarse(coarse_input)
 			fake_coarse_alpha = color_ramp(0.1, 0.9, torch.clamp(fake_coarse[:,0:1,:,:], 0, 1))
 			fake_coarse_error = torch.sigmoid(fake_coarse[:,1:2,:,:])
 			fake_coarse_foreground_residual = fake_coarse[:,2:5,:,:]
@@ -205,6 +201,10 @@ for epoch in range(20):
 			#print(composite_tensor.shape)
 			real_coarse_composite = F.interpolate(composite_tensor, size = [composite_tensor.shape[-2]//4, composite_tensor.shape[-1]//4])
 			#print("real_coarse_composite shape", real_coarse_composite.shape)
+
+			image = real_coarse_composite[0, dataset_params["comp_context_depth"]*3:dataset_params["comp_context_depth"]*3 + 3]
+			image = transforms.ToPILImage()(image.squeeze())
+			image.save(f'outputs7/0000{iteration}.jpg')
 
 			#print(composite_tensor[:, dataset_params['comp_context_depth']].shape, fake_coarse_foreground_residual.shape)
 
@@ -231,12 +231,14 @@ for epoch in range(20):
 
 		if(iteration > schedule1):
 
+			DO PATCH GETTING ON CPU TO SPEED UP TRAINING. THEN LOAD PATCHES ONTO GPU. SAVE MEMORY AND TIME. (OH I THINK I JUST DID IT. HAVEN'T TESTED THOUGH)
+
 			downsampled_input_tensor = F.interpolate(input_tensor, [input_tensor.shape[-2]//2, input_tensor.shape[-1]//2])
 			upscaled_coarse_outputs = F.interpolate(fake_coarse, [input_tensor.shape[-2]//2, input_tensor.shape[-1]//2])
 			start_patch_source = torch.cat([downsampled_input_tensor, upscaled_coarse_outputs], 1)
 
-			start_patches, indices = get_image_patches(start_patch_source, fake_coarse_error, patch_size = 8, stride = 2, k = 10000)
-			middle_patches, _ = get_image_patches(input_tensor, fake_coarse_error, patch_size = 8, stride = 4, k = 10000)
+			start_patches, indices = get_image_patches(start_patch_source, fake_coarse_error, patch_size = 8, stride = 2, k = 10000).to(device)
+			middle_patches, _ = get_image_patches(input_tensor, fake_coarse_error, patch_size = 8, stride = 4, k = 10000).to(device)
 
 			#Now, feed the outputs of the coarse generator into the refinement network, which will refine patches.
 			fake_refined_patches = refine(start_patches, middle_patches)
