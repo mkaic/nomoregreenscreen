@@ -169,6 +169,11 @@ for epoch in range(20):
 
 		with torch.cuda.amp.autocast(enabled = use_amp):
 
+			real_foreground = real_foreground.to(device)
+			real_background = real_background.to(device)
+			real_alpha = real_alpha.to(device)
+			real_bprime = real_bprime.to(device)
+
 			#Composite the augmented foreground onto the augmented background according to the augmented alpha.
 			composite_tensor = composite(real_background, real_foreground, real_alpha).view(batch_size, -1, real_foreground.shape[-2], real_foreground.shape[-1])
 			real_bprime = real_bprime.view(batch_size, -1, real_foreground.shape[-2], real_foreground.shape[-1])
@@ -176,7 +181,7 @@ for epoch in range(20):
 			#corresponding to the target frame.
 			input_tensor = torch.cat([composite_tensor, real_bprime], 1)
 			input_tensor = input_tensor.view(batch_size, -1, input_tensor.shape[-2], input_tensor.shape[-1])
-			coarse_input = F.interpolate(input_tensor, size = [input_tensor.shape[-2]//4, input_tensor.shape[-1]//4]).to(device)
+			coarse_input = F.interpolate(input_tensor, size = [input_tensor.shape[-2]//4, input_tensor.shape[-1]//4])
 
 			#Grab the center frame of the alpha packet, this is the one we're trying to predict.
 			real_alpha = real_alpha.view(batch_size, -1, input_tensor.shape[-2], input_tensor.shape[-1])
@@ -184,7 +189,7 @@ for epoch in range(20):
 			#print(real_center_alpha.shape)
 
 			#Get a downsampled version of the alpha for grading the coarse network on
-			real_coarse_alpha = F.interpolate(real_center_alpha, size = [real_center_alpha.shape[-2]//4, real_center_alpha.shape[-1]//4]).to(device)
+			real_coarse_alpha = F.interpolate(real_center_alpha, size = [real_center_alpha.shape[-2]//4, real_center_alpha.shape[-1]//4])
 
 			#Generate a fake coarse alpha, along with a guessed error map and some hidden channel data. Oh yeah and the foreground residual
 			fake_coarse = coarse(coarse_input)

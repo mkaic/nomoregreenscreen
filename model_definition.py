@@ -122,7 +122,7 @@ class CoarseMatteGenerator(nn.Module):
 		shape_32nd = [height//32, width//32]
 
 		
-		X1 = self.upchannel1(X)
+		X1 = self.upchannel1(input_tensor)
 		X1 = self.activation(X1)
 		X1 = self.ident1(X1)
 
@@ -144,7 +144,7 @@ class CoarseMatteGenerator(nn.Module):
 		X5 = F.interpolate(X5, size = shape_half)
 		X6 = self.downchannel2(X5, X2)
 
-		X6 = F.interpolate(X6, size = [height + 4, width + 4])
+		X6 = F.interpolate(X6, size = [height + 8, width + 8])
 		X7 = self.downchannel3(X6, X1)
 
 		#X8 = torch.sigmoid(X8)
