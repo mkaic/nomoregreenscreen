@@ -14,6 +14,8 @@ import time
 from tqdm import tqdm
 from torchsummary import summary
 
+from kornia.filters import sobel
+
 from matte_dataset import MatteDataset
 from model_definition import *
 device = 'cuda'
@@ -43,11 +45,11 @@ device = 'cuda'
 print('Initializing Dataset...')
 dataset_params = {
 	
-	'bg_dir':'train_set/backgrounds/',
-	'fg_dir':'train_set/foregrounds/',
-	'comp_context_depth': 1,
+	'bg_dir':'train_set_2/backgrounds/',
+	'fg_dir':'train_set_2/foregrounds/',
+	'comp_context_depth': 0,
 	'comp_context_stride': 2,
-	'bprime_context_depth': 1,
+	'bprime_context_depth': 0,
 	'bprime_context_stride': 2
 
 }
@@ -56,7 +58,7 @@ batch_size = 4
 
 #Initialize the dataset and the loader to feed the data to the network.
 dataset = MatteDataset(**dataset_params)
-loader = DataLoader(dataset, batch_size = batch_size, shuffle = True, num_workers = 3, pin_memory = True)
+loader = DataLoader(dataset, batch_size = batch_size, shuffle = True, num_workers = 4, pin_memory = True)
 
 
 print('Initializing Network...')
@@ -159,13 +161,20 @@ def composite(bg_tensor, fg_tensor, alpha_tensor):
 #track how many batches have been done for things like periodic outputs and eventually scheduling.
 iteration = 0
 schedule1 = 1000
+break_point = 100000
+
+coarse_opt = torch.optim.Adam(coarse.parameters(), lr = learning_rate)
+coarse_scheduler = torch.optim.lr_scheduler.StepLR(coarse_opt, step_size = 500, gamma = 0.97)
+
 
 print('\nTraining...')
-for epoch in range(20):
+for epoch in range(3):
 	print(f'Epoch: {epoch}')
 
 	#Get an example from the dataset.
 	for real_foreground, real_background, real_alpha, real_bprime in tqdm(loader):
+
+		
 
 		with torch.cuda.amp.autocast(enabled = use_amp):
 
@@ -205,11 +214,7 @@ for epoch in range(20):
 
 			#print(composite_tensor.shape)
 			real_coarse_composite = F.interpolate(composite_tensor, size = [composite_tensor.shape[-2]//4, composite_tensor.shape[-1]//4])
-			#print("real_coarse_composite shape", real_coarse_composite.shape)
-
-			image = real_coarse_composite[0, dataset_params["comp_context_depth"]*3:dataset_params["comp_context_depth"]*3 + 3]
-			image = transforms.ToPILImage()(image.squeeze())
-			image.save(f'outputs7/0000{iteration}.jpg')
+			#print("real_coarse_composite shape", real_coarse_composite.shape
 
 			#print(composite_tensor[:, dataset_params['comp_context_depth']].shape, fake_coarse_foreground_residual.shape)
 
@@ -221,13 +226,15 @@ for epoch in range(20):
 			#print(fake_coarse_foreground.shape)
 			#print(foreground_penalty_zone.shape)
 
+			coarse_sobel = torch.mean(sobel(fake_coarse_alpha))
+
 		#The loss of the coarse network is L1 loss of coarse alpha, L1 loss of coarse error, and L1 loss (only where real_alpha >0.1) of coarse foreground.
 		coarse_loss = criterion(fake_coarse_alpha, real_coarse_alpha) + \
 		criterion(fake_coarse_error,real_coarse_error) + \
-		torch.mean(torch.abs((real_coarse_foreground - fake_coarse_foreground) * foreground_penalty_zone))
+		torch.mean(torch.abs((real_coarse_foreground - fake_coarse_foreground) * foreground_penalty_zone)) + \
+		coarse_sobel
 
 		#if it's before the training cutoff, then the loss is just for the coarse network.
-		coarse_opt = torch.optim.Adam(coarse.parameters(), lr = learning_rate)
 		coarse_opt.zero_grad()
 		coarse_loss.backward()
 		coarse_opt.step()
@@ -270,6 +277,8 @@ for epoch in range(20):
 		#For keeping track of the outputs so I can look through them to see the network is working right.
 		iteration += 1
 
+		coarse_scheduler.step()
+
 
 		if(iteration % 100 == 0):
 			image = fake_coarse_alpha[0]
@@ -292,6 +301,10 @@ for epoch in range(20):
 
 			print(coarse_loss)
 
+		if(iteration > break_point):
+
+			break
+
 			
 
 		"""
@@ -313,14 +326,14 @@ for epoch in range(20):
 			image.save(f'outputs7/{iteration}real_alpha.jpg')
 		"""
 
-		if(iteration % 500 == 0):
-			learning_rate *= 0.9
-
 
 
 
 
 print('\nTraining completed successfully.')
+
+torch.save(coarse, "./model_saves/final_coarse_1")
+torch.save(refine, "./model_saves/final_refine_1")
 
 
 	
