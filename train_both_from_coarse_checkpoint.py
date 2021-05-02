@@ -54,11 +54,11 @@ dataset_params = {
 
 }
 
-batch_size = 4
+batch_size = 2
 
 #Initialize the dataset and the loader to feed the data to the network.
 dataset = MatteDataset(**dataset_params)
-loader = DataLoader(dataset, batch_size = batch_size, shuffle = True, num_workers = 4, pin_memory = True)
+loader = DataLoader(dataset, batch_size = batch_size, shuffle = True, num_workers = 5, pin_memory = True)
 
 
 print('Initializing Network...')
@@ -67,9 +67,10 @@ input_channels = ((dataset_params['comp_context_depth'] * 2 + 1) + (dataset_para
 num_hidden_channels = 0
 
 #Initialize the network which will produce a coarse alpha (1 chan), confidence map (1 chan), and a number of hidden channels (num_hidden_channels chan)...
-coarse = CoarseMatteGenerator(input_channels = input_channels, output_channels = num_hidden_channels + 5, chan = 64).train().to(device)
+coarse = torch.load("model_saves/coarse_model_save_1.zip")
+coarse.train().to(device)
 #... which we will then feed to the refinement network to upsample and refine the area of least confidence.
-refine = RefinePatches(input_channels = input_channels, coarse_channels = num_hidden_channels + 2, output_channels = 1, chan = 32).train().to(device)
+refine = RefinePatches(input_channels = input_channels, coarse_channels = num_hidden_channels + 5, output_channels = 1, chan = 32).train().to(device)
 
 learning_rate = 0.00001
 
@@ -166,6 +167,9 @@ break_point = 100000
 coarse_opt = torch.optim.Adam(coarse.parameters(), lr = learning_rate)
 coarse_scheduler = torch.optim.lr_scheduler.StepLR(coarse_opt, step_size = 500, gamma = 0.97)
 
+refine_opt = torch.optim.Adam(refine.parameters(), lr = learning_rate)
+refine_scheduler = torch.optim.lr_scheduler.StepLR(refine_opt, step_size = 500, gamma = 0.97)
+
 
 print('\nTraining...')
 for epoch in range(3):
@@ -204,7 +208,7 @@ for epoch in range(3):
 			fake_coarse = coarse(coarse_input)
 			fake_coarse_alpha = color_ramp(0.1, 0.9, torch.clamp(fake_coarse[:,0:1,:,:], 0, 1))
 			fake_coarse_error = torch.sigmoid(fake_coarse[:,1:2,:,:])
-			fake_coarse_foreground_residual = fake_coarse[:,2:5,:,:]
+			#fake_coarse_foreground_residual = fake_coarse[:,2:5,:,:]
 
 			#print(fake_coarse_foreground_residual.shape)
 			#fake_coarse_hidden_channels = torch.relu(fake_coarse[:,5:,:,:])
@@ -219,8 +223,8 @@ for epoch in range(3):
 			#print(composite_tensor[:, dataset_params['comp_context_depth']].shape, fake_coarse_foreground_residual.shape)
 
 			#construct the fake foreground
-			fake_coarse_foreground = torch.clamp(real_coarse_composite[:, dataset_params["comp_context_depth"]*3:dataset_params["comp_context_depth"]*3 + 3] + fake_coarse_foreground_residual, 0, 1)
-			foreground_penalty_zone = real_coarse_alpha > 0.1
+			#fake_coarse_foreground = torch.clamp(real_coarse_composite[:, dataset_params["comp_context_depth"]*3:dataset_params["comp_context_depth"]*3 + 3] + fake_coarse_foreground_residual, 0, 1)
+			#foreground_penalty_zone = real_coarse_alpha > 0.1
 			real_coarse_foreground = F.interpolate(real_foreground[:, dataset_params["comp_context_depth"]], size = [real_foreground.shape[-2]//4, real_foreground.shape[-1]//4])
 			#print(real_coarse_foreground.shape)
 			#print(fake_coarse_foreground.shape)
@@ -231,26 +235,26 @@ for epoch in range(3):
 		#The loss of the coarse network is L1 loss of coarse alpha, L1 loss of coarse error, and L1 loss (only where real_alpha >0.1) of coarse foreground.
 		coarse_loss = criterion(fake_coarse_alpha, real_coarse_alpha) + \
 		criterion(fake_coarse_error,real_coarse_error) + \
-		torch.mean(torch.abs((real_coarse_foreground - fake_coarse_foreground) * foreground_penalty_zone)) + \
 		coarse_sobel
+
+		#to add foreground generation to loss:
+		#torch.mean(torch.abs((real_coarse_foreground - fake_coarse_foreground) * foreground_penalty_zone)) + \
 
 		#if it's before the training cutoff, then the loss is just for the coarse network.
 		coarse_opt.zero_grad()
 		coarse_loss.backward()
 		coarse_opt.step()
-			
-		"""				
+		coarse_scheduler.step()
 
-		if(iteration > schedule1):
-
-			DO PATCH GETTING ON CPU TO SPEED UP TRAINING. THEN LOAD PATCHES ONTO GPU. SAVE MEMORY AND TIME. (OH I THINK I JUST DID IT. HAVEN'T TESTED THOUGH)
+		with torch.cuda.amp.autocast(enabled = use_amp):
+			#DO PATCH GETTING ON CPU TO SPEED UP TRAINING. THEN LOAD PATCHES ONTO GPU. SAVE MEMORY AND TIME. (OH I THINK I JUST DID IT. HAVEN'T TESTED THOUGH)
 
 			downsampled_input_tensor = F.interpolate(input_tensor, [input_tensor.shape[-2]//2, input_tensor.shape[-1]//2])
 			upscaled_coarse_outputs = F.interpolate(fake_coarse, [input_tensor.shape[-2]//2, input_tensor.shape[-1]//2])
 			start_patch_source = torch.cat([downsampled_input_tensor, upscaled_coarse_outputs], 1)
 
-			start_patches, indices = get_image_patches(start_patch_source, fake_coarse_error, patch_size = 8, stride = 2, k = 10000).to(device)
-			middle_patches, _ = get_image_patches(input_tensor, fake_coarse_error, patch_size = 8, stride = 4, k = 10000).to(device)
+			start_patches, indices = get_image_patches(start_patch_source, fake_coarse_error, patch_size = 8, stride = 2, k = 10000)
+			middle_patches, _ = get_image_patches(input_tensor, fake_coarse_error, patch_size = 8, stride = 4, k = 10000)
 
 			#Now, feed the outputs of the coarse generator into the refinement network, which will refine patches.
 			fake_refined_patches = refine(start_patches, middle_patches)
@@ -258,29 +262,17 @@ for epoch in range(3):
 			mega_upscaled_fake_coarse_alpha = F.interpolate(fake_coarse_alpha, size = [input_tensor.shape[-2], input_tensor.shape[-1]])
 			fake_refined_alpha = replace_image_patches(images = mega_upscaled_fake_coarse_alpha, patches = fake_refined_patches, indices = indices)
 
-			#The loss of the coarse network is the pixel difference between the real and fake coarse alphas and error maps added together.
-			coarse_loss = criterion(fake_coarse_alpha, real_coarse_alpha) + criterion(fake_coarse_error, real_coarse_error)
-			#The loss of the refinement network is just the pixel difference between what it made and what it was supposed to make.
-			refine_loss = criterion(fake_refined_alpha, real_alpha)
-
-			#if it's after the training cutoff, train both modules concurrently
-			loss = coarse_loss + refine_loss
-			refine_opt = torch.optim.Adam(refine.parameters(), lr = learning_rate)
-			refine_opt.zero_grad()
-		"""
-		"""
-		if(iteration > schedule1):
-
-			refine_opt.step()
-		"""
+		#The loss of the refinement network is just the pixel difference between what it made and what it was supposed to make.
+		refine_loss = criterion(fake_refined_alpha, real_alpha)
+		refine_opt.zero_grad()
+		refine_opt.step()
+		refine_scheduler.step()
 
 		#For keeping track of the outputs so I can look through them to see the network is working right.
 		iteration += 1
 
-		coarse_scheduler.step()
 
-
-		if(iteration % 100 == 0):
+		if(iteration % 250 == 0):
 			image = fake_coarse_alpha[0]
 			image = transforms.ToPILImage()(image)
 			image.save(f'outputs7/{iteration}fake_coarse_alpha.jpg')
@@ -289,15 +281,17 @@ for epoch in range(3):
 			image = transforms.ToPILImage()(image)
 			image.save(f'outputs7/{iteration}real_alpha.jpg')
 
-			image = fake_coarse_foreground[0]
+			image = fake_refined_alpha[0]
 			image = transforms.ToPILImage()(image)
-			image.save(f'outputs7/{iteration}fake_foreground.jpg')
+			image.save(f'outputs7/{iteration}fake_alpha.jpg')
 
+			"""
 			image = torch.sigmoid(fake_coarse_foreground_residual[0])
 			image = transforms.ToPILImage()(image)
 			image.save(f'outputs7/{iteration}fake_foreground_residual.jpg')
+			"""
 
-		if(iteration % 100 == 0):
+		if(iteration % 250 == 0):
 
 			print(coarse_loss)
 
@@ -332,8 +326,8 @@ for epoch in range(3):
 
 print('\nTraining completed successfully.')
 
-torch.save(coarse, "./model_saves/final_coarse_1")
-torch.save(refine, "./model_saves/final_refine_1")
+torch.save(coarse, "./model_saves/final_coarse_1.zip")
+torch.save(refine, "./model_saves/final_refine_1.zip")
 
 
 	
