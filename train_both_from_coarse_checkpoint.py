@@ -165,10 +165,10 @@ schedule1 = 1000
 break_point = 100000
 
 coarse_opt = torch.optim.Adam(coarse.parameters(), lr = learning_rate)
-coarse_scheduler = torch.optim.lr_scheduler.StepLR(coarse_opt, step_size = 500, gamma = 0.97)
+coarse_scheduler = torch.optim.lr_scheduler.StepLR(coarse_opt, step_size = 1000, gamma = 0.98)
 
 refine_opt = torch.optim.Adam(refine.parameters(), lr = learning_rate)
-refine_scheduler = torch.optim.lr_scheduler.StepLR(refine_opt, step_size = 500, gamma = 0.97)
+refine_scheduler = torch.optim.lr_scheduler.StepLR(refine_opt, step_size = 1000, gamma = 0.98)
 
 
 print('\nTraining...')
@@ -194,11 +194,16 @@ for epoch in range(3):
 			#corresponding to the target frame.
 			input_tensor = torch.cat([composite_tensor, real_bprime], 1)
 			input_tensor = input_tensor.view(batch_size, -1, input_tensor.shape[-2], input_tensor.shape[-1])
+
+			image = input_tensor[0,:3]
+			image = transforms.ToPILImage()(image)
+			image.save(f'TRAINING_EXAMPLES/{iteration}hdcomp.jpg')
 			coarse_input = F.interpolate(input_tensor, size = [input_tensor.shape[-2]//4, input_tensor.shape[-1]//4])
 
 			#Grab the center frame of the alpha packet, this is the one we're trying to predict.
 			real_alpha = real_alpha.view(batch_size, -1, input_tensor.shape[-2], input_tensor.shape[-1])
 			real_center_alpha = real_alpha[:, dataset_params["comp_context_depth"]].unsqueeze(1)
+
 			#print(real_center_alpha.shape)
 
 			#Get a downsampled version of the alpha for grading the coarse network on
@@ -253,18 +258,19 @@ for epoch in range(3):
 			upscaled_coarse_outputs = F.interpolate(fake_coarse, [input_tensor.shape[-2]//2, input_tensor.shape[-1]//2])
 			start_patch_source = torch.cat([downsampled_input_tensor, upscaled_coarse_outputs], 1)
 
-			start_patches, indices = get_image_patches(start_patch_source, fake_coarse_error, patch_size = 8, stride = 2, k = 10000)
-			middle_patches, _ = get_image_patches(input_tensor, fake_coarse_error, patch_size = 8, stride = 4, k = 10000)
+			start_patches, indices = get_image_patches(start_patch_source.detach(), fake_coarse_error.detach(), patch_size = 8, stride = 2, k = 10000)
+			middle_patches, _ = get_image_patches(input_tensor.detach(), fake_coarse_error.detach(), patch_size = 8, stride = 4, k = 10000)
 
 			#Now, feed the outputs of the coarse generator into the refinement network, which will refine patches.
 			fake_refined_patches = refine(start_patches, middle_patches)
 
-			mega_upscaled_fake_coarse_alpha = F.interpolate(fake_coarse_alpha, size = [input_tensor.shape[-2], input_tensor.shape[-1]])
+			mega_upscaled_fake_coarse_alpha = F.interpolate(fake_coarse_alpha.detach(), size = [input_tensor.shape[-2], input_tensor.shape[-1]])
 			fake_refined_alpha = replace_image_patches(images = mega_upscaled_fake_coarse_alpha, patches = fake_refined_patches, indices = indices)
 
 		#The loss of the refinement network is just the pixel difference between what it made and what it was supposed to make.
-		refine_loss = criterion(fake_refined_alpha, real_alpha)
 		refine_opt.zero_grad()
+		refine_loss = criterion(fake_refined_alpha, real_alpha)
+		refine_loss.backward()
 		refine_opt.step()
 		refine_scheduler.step()
 
@@ -294,6 +300,7 @@ for epoch in range(3):
 		if(iteration % 250 == 0):
 
 			print(coarse_loss)
+			print(refine_loss)
 
 		if(iteration > break_point):
 
