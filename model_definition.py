@@ -6,76 +6,7 @@ from torch.utils.data import Dataset, DataLoader
 from PIL import Image
 import time
 from tqdm import tqdm
-
-class IdentityBlock(nn.Module):
-	#Inputs a tensor, convolves/activates it twice, then adds it to the original input version of itself (residual block)
-
-	def __init__(self, channels):
-		super().__init__()
-
-		self.activation = nn.ReLU()
-		self.conv1 = nn.Conv2d(channels, channels, kernel_size = 1)
-		self.conv2 = nn.Conv2d(channels, channels, kernel_size = 5)
-		self.skipconv = nn.Conv2d(channels, channels, kernel_size = 5)
-
-		self.bn = nn.BatchNorm2d(channels)
-
-	def forward(self, X):
-
-		skipped_X = X
-
-		X = self.conv1(X)
-		X = self.activation(X)
-		X = self.conv2(X)
-
-		skipped_X = self.skipconv(skipped_X)
-	
-		X = torch.add(X, skipped_X)
-		X = self.bn(X)
-		X = self.activation(X)
-
-		return X
-
-
-class SkipConnDownChannel(nn.Module):
-
-	def __init__(self, input_channels, output_channels, final = False):
-		super().__init__()
-
-		self.input_channels = input_channels
-		self.activation = nn.ReLU()
-		self.final = final
-
-		self.input_down_channel = nn.Conv2d(input_channels, input_channels//2, kernel_size = 1)
-		self.skip_down_channel = nn.Conv2d(input_channels, input_channels//2, kernel_size = 1)
-
-		self.concatenated_down_channel = nn.Conv2d(input_channels, input_channels//2, kernel_size = 5)
-		self.concatenated_conv = nn.Conv2d(input_channels//2, output_channels, kernel_size = 5)
-		self.bn = nn.BatchNorm2d(output_channels)
-
-
-	def forward(self, X, skipped_X):
-
-		X = self.input_down_channel(X)
-		X = self.activation(X)
-
-		skipped_X = self.skip_down_channel(skipped_X)
-		skipped_X = self.activation(skipped_X)
-
-		skipped_X = F.interpolate(skipped_X, size = [X.shape[-2], X.shape[-1]])
-		concatenated = torch.cat([X, skipped_X], 1)
-
-		concatenated = self.concatenated_down_channel(concatenated)
-		concatenated = self.activation(concatenated)
-		concatenated = self.concatenated_conv(concatenated)
-		concatenated = self.bn(concatenated)
-		
-
-		if(not self.final):
-			
-			concatenated = self.activation(concatenated)
-
-		return concatenated
+from train_utils import SkipConnDownChannel, IdentityBlock
 
 
 class CoarseMatteGenerator(nn.Module):
