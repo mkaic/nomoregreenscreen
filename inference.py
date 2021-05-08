@@ -1,4 +1,5 @@
 
+print("Loading libraries...")
 #Torch stuff, plust image transforms, plus torchsummary for getting an idea of how many params my model has, etc.
 import torch
 import torch.nn as nn
@@ -12,126 +13,155 @@ from torchsummary import summary
 import numpy as np
 from tqdm import tqdm
 from PIL import Image
-import ffmpeg
 import argparse
+import time
+import cv2 as cv
 
 import os
 
-#Define hyperparameters. Context depths and strides refer to the number and spacing of temporal context to use on
-#the two input videos. Not really adjustable (without retraining model), but good to have notated here. Might
-#try to make them adjustable somehow TODO?
+from model_definition import *
+from train_utils import get_image_patches, replace_image_patches, color_ramp
 
-target_context_depth = 2
-target_context_stride = 5
-target_loop_buffer = target_context_depth * target_context_stride
+device = "cuda"
 
-background_context_depth = 3
-background_context_stride = 5
-background_loop_buffer = background_context_depth * background_context_stride
-
-
-#Allows PyTorch to take full advantage of the fancy stuff in my GPU for convolutions.
-torch.backends.cuda.matmul.allow_tf32 = True
-torch.backends.cudnn.allow_tf32 = True
-device = "cuda" if torch.cuda.is_available() else "cpu"
+#Load coarse gen and refinement networks from their saved weights on disks.
+print("Loading neural networks...")
+Coarse = torch.load('model_saves/final_coarse_1.zip').eval().to(device)
+Refine = torch.load('model_saves/final_refine_1.zip').eval().to(device)
+search_width = 10
 
 #Allows me to run this from the command line with custom inputs/outputs specified there.
 parser = argparse.ArgumentParser()
-parser.add_argument('--target', '-t', help = 'Path to the video you want to remove the background FROM.')
+parser.add_argument('--source', '-s', help = 'Path to the video you want to remove the background FROM.')
 parser.add_argument('--background', '-b', help = 'Path to the video you want to give the model as reference for what JUST THE BACKGROUND looks like.')
-parser.add_argument('--output', '-o', help = 'Path to output the final video file/still image frame file to.')
-
+parser.add_argument('--output', '-o', help = 'Path to output the final RGBA PNG sequence to.')
+parser.add_argument('--searchwidth', '-w', help = 'how many frames temprally away from the source frame to check in the background video')
 args = parser.parse_args()
 
-#Preprocess the background to a series of still frames. It ain't pretty but it's necessary.
+print("Preprocessing source video...")
+#Preprocess the background to a series of jpgs, and the foreground to PNGs (so it's lossless). It ain't pretty but it's necessary.
+os.system(f'ffmpeg -loglevel error -i {args.source} -vsync 0 cached_frames/source/%d.png')
+print("Preprocessing background video...")
+os.system(f'ffmpeg -loglevel error -i {args.background} -vsync 0 -q:v 2 cached_frames/background/%d.jpg')
 
-ffmpeg.input(args.background).output('cached_frames/background/%d.jpg', vsync = 0, qscale = 2).overwrite_output().run(quiet = True)
+if(args.searchwidth):
+	search_width = int(args.searchwidth)
 
-#Given the path to a video, a central frame index, the number of frames before and after it to grab, 
-#the spacing between those frames, and a unique cache identifier for later, return a tensor of the right images.
-def get_frame_packet(path, index, context_depth, context_stride, cache_id):
+print('Detecting features in source video...')
 
-	#Import the video and use ffprobe to find out the frame count
-	video = ffmpeg.input(path)
+#The main loop. Everything inside this gets executed on every frame of the source video: background
+#frame finding, homography, coarse matte generation, and matte refinement.
+source_list = os.listdir('cached_frames/source/')
+source_len = len(source_list)
+background_list = os.listdir('cached_frames/background/')
+background_len = len(background_list)
 
-	start_index = index - (context_stride * context_depth)
-	selection_string = ''
-
-	#construct the selection query for ffmpeg to use to find the right frames.
-	for context_index in range(2 * context_depth + 1):
-		selection_string = selection_string + 'eq(n,' + str(start_index + (context_index * context_stride)) + ')+'
-
-	selection_string = selection_string[:-1]	
-	print(selection_string)
-
-	#output the correct frames
-	video.filter_('select', selection_string).output('cached_frames/' + cache_id + '/%d.jpg', vsync = 0, qscale = 2).overwrite_output().run(quiet = True)
-
-	frame_packet =  []
-
-	#loop through the frame packet we just made
-	for image in os.listdir('cached_frames/' + cache_id):
-		filename = os.fsdecode(image)
-		#find the right ones
-			
-		frame_packet.append(transforms.ToTensor()(Image.open('cached_frames/' + cache_id + '/' + filename)))
-
-	#Since whatever packet we're getting is gonna be fed into the neural net, we'll just concatenate along the channels axis, so it's like one THICC image.
-	frame_packet_tensor = torch.stack(frame_packet, 0)
-	frame_packet_tensor = frame_packet_tensor.view(-1, frame_packet_tensor.shape[-2], frame_packet_tensor.shape[-1])
-	return frame_packet_tensor
+detector = cv.ORB_create(1000)
 
 
-def get_frame_embedding(target_frame):
+#LOOP over all source PNG frames and detect and compute features for them
+source_kp_list = []
+source_des_list = []
 
-	return
+for source_name in tqdm(source_list):
 
-def generate_input_tensor(index):
+	PILsource = Image.open(f'cached_frames/source/{source_name}')
+	
+	source = np.asarray(PILsource)
+	BWsource = cv.cvtColor(source, cv.COLOR_RGB2GRAY)
+	
+	source_kp, source_des = detector.detectAndCompute(BWsource, None)
 
-	return
+	source_kp_list.append(source_kp)
+	source_des_list.append(source_des)
 
-#Note to self -- it might be better to just pre-convert both clips to image sequences. It ain't ideal but it might be necessary.
+background_kp_list = []
+background_des_list = []
 
-#Inference time!
-#First we'll grab the frame counts of both input vids, they'll be useful later.
-target_probe = ffmpeg.probe(args.target)
-target_frame_count = int(target_probe['streams'][0]['nb_frames'])
+print("Detecting features in background video...")
+#LOOP over all background PNG frames and detect and compute features for them
+for background_name in tqdm(background_list):
 
-background_probe = ffmpeg.probe(args.background)
-background_frame_count = int(background_probe['streams'][0]['nb_frames'])
+	PILbackground = Image.open(f'cached_frames/background/{background_name}')
+	
+	background = np.asarray(PILbackground)
+	BWbackground = cv.cvtColor(background, cv.COLOR_RGB2GRAY)
+	
+	background_kp, background_des = detector.detectAndCompute(BWbackground, None)
 
-for target_frame in range(target_loop_buffer - 1, target_frame_count - target_loop_buffer):
+	background_kp_list.append(background_kp)
+	background_des_list.append(background_des)
 
-	input_tensor = generate_input_tensor(target_frame)
+print("Matching background frames to source frames and running inference...")
+matcher = cv.DescriptorMatcher_create(cv.DESCRIPTOR_MATCHER_BRUTEFORCE_HAMMING)
+
+for source_idx, source_name in enumerate(tqdm(source_list)):
+
+	source_img = np.asarray(Image.open(f'cached_frames/source/{source_name}'))
+
+	#tick = time.time()
+	best_score = -1
+	
+	#always temporally center our search
+	background_start_idx = int(source_idx / source_len * background_len)
+	search_start_idx = max(0, background_start_idx - search_width)
+	search_end_idx = min(background_len, background_start_idx + search_width)
+	best_background = np.zeros_like(source_img)
+
+	for background_idx, background_name in enumerate(background_list\
+		[search_start_idx: search_end_idx], start = search_start_idx):
+		
+		matches = matcher.match(background_des_list[background_idx], source_des_list[source_idx], None)
+
+		#sort the matches by lowest distance up. the lambda is just a little function that reads like this:
+		# function such that for each item x, retrieve the distance property of x.
+		matches.sort(key = lambda x: x.distance, reverse = False)
+		top_matches = matches[:int(len(matches)*0.15)]
+
+		source_kp = source_kp_list[source_idx]
+		source_coords = np.float32([source_kp[match.trainIdx].pt for match in top_matches]).reshape(-1, 1, 2)
+
+		background_kp = background_kp_list[background_idx]
+		background_coords = np.float32([background_kp[match.queryIdx].pt for match in top_matches]).reshape(-1, 1, 2)
+
+		H, inliers = cv.findHomography(background_coords, source_coords, cv.RANSAC, 5.0)
+
+		inliers_total = np.sum(inliers)
+
+		background_img = np.asarray(Image.open(f'cached_frames/background/{background_name}'))
+
+		Image.fromarray(cv.drawMatches(source_img, source_kp, background_img, background_kp, top_matches, None)).save(f'alignment_test/alignment{source_idx}{background_idx}.jpeg')
 
 
+		h, w = source_img.shape[:2]
+		warped_background = cv.warpPerspective(background_img, H, (w,h))
+		warped_mask = cv.warpPerspective(np.ones((h,w)), H, (w,h))
 
-#Main inference loop. Loop over frames of target video (minus a margin on either side for getting frame packets),
-#and use The Fancy Model on each of them, then save the result to an outputs directory 
+		warped_background[warped_mask != 1] = source_img[warped_mask != 1]
 
+		mean_pixel_error = np.mean(np.abs(warped_background - source_img))
 
+		score = inliers_total
 
+		if (score > best_score):
 
+			best_unwarped_background = background_img
+			best_background = warped_background
+			best_score = score
 
+	background_PIL = Image.fromarray(best_background)
+	source_PIL = Image.fromarray(source_img)
+	unwarped_PIL = Image.fromarray(best_unwarped_background)
 
+	background_PIL.save(f'alignment_test/{source_idx}background.jpg')
+	source_PIL.save(f'alignment_test/{source_idx}source.jpg')
+	unwarped_PIL.save(f'alignment_test/{source_idx}unwarped.jpg')
 
+	#print(time.time() - tick)
 
+print('Deleting cached frames...')
 
-"""
-#Reconstruct a video from the alpha png frames produced.
+os.system('rm cached_frames/background/*')
+os.system('rm cached_frames/source/*')
 
-color_space = target_probe['streams'][0]['color_space']
-color_transfer = target_probe['streams'][0]['color_transfer']
-color_primaries = target_probe['streams'][0]['color_primaries']
-target_framerate = target_probe['streams'][0]['avg_frame_rate']
-
-try:
-	output = ffmpeg.input('./test_footage/bg_frames/%04d.jpg', framerate = target_framerate)
-	output.output('colorSpaceCorrect.mov', vcodec = 'qtrle', color_primaries = color_primaries, color_trc = color_transfer, colorspace = color_space, qscale = 2).overwrite_output().run(quiet = True, capture_stderr = True)
-
-except ffmpeg.Error as e:
-
-	print('stderr:', e.stderr.decode('utf8'))
-	raise e
-
-"""
+print('Done.')
