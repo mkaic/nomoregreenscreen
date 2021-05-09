@@ -83,72 +83,72 @@ def composite(bg_tensor, fg_tensor, alpha_tensor):
 
 		return composite
 
-class IdentityBlock(nn.Module):
-	#Inputs a tensor, convolves/activates it twice, then adds it to the original input version of itself (residual block)
+class ResidualBlock(nn.Module):
 
-	def __init__(self, channels):
+	def __init__(self, \
+		input_channels, bottleneck_channels, output_channels,\
+		dilation = None, projection = False, downsample = False):
+
 		super().__init__()
 
-		self.activation = nn.ReLU()
-		self.conv1 = nn.Conv2d(channels, channels, kernel_size = 1)
-		self.conv2 = nn.Conv2d(channels, channels, kernel_size = 5)
-		self.skipconv = nn.Conv2d(channels, channels, kernel_size = 5)
 
-		self.bn = nn.BatchNorm2d(channels)
+		self.intake = nn.Conv2d(input_channels, bottleneck_channels, kernel_size = 1, stride = 2 if downsample else 1)
+		self.bn1 = nn.BatchNorm2d(bottleneck_channels)
+
+		if(dilation == None):
+			self.crunch = nn.Conv2d(bottleneck_channels, bottleneck_channels, kernel_size = 3, padding = 1)
+		else:
+			self.crunch = nn.Conv2d(bottleneck_channels, bottleneck_channels, kernel_size = 3,\
+			dilation = dilation, padding = dilation)
+		
+		self.bn2 = nn.BatchNorm2d(bottleneck_channels)
+		self.outlet = nn.Conv2d(bottleneck_channels, output_channels, kernel_size = 1)
+		self.bn3 = nn.BatchNorm2d(output_channels)
+
+		self.projection = projection
+		if(self.projection):
+			self.projection_conv = nn.Conv2d(input_channels, output_channels, kernel_size = 1, stride = 2 if downsample else 1)
+
+		self.activation = nn.ReLU()
 
 	def forward(self, X):
 
-		skipped_X = X
+		skipX = X
 
-		X = self.conv1(X)
+		X = self.intake(X)
+		X = self.bn1(X)
 		X = self.activation(X)
-		X = self.conv2(X)
 
-		skipped_X = self.skipconv(skipped_X)
-	
-		X = torch.add(X, skipped_X)
-		X = self.bn(X)
+		X = self.crunch(X)
+		X = self.bn2(X)
+		X = self.activation(X)
+
+		X = self.outlet(X)
+		X = self.bn3(X)
+
+		if(self.projection):
+			skipX = self.projection_conv(skipX)
+
+		X = X + skipX
+
 		X = self.activation(X)
 
 		return X
 
 
-class SkipConnDownChannel(nn.Module):
+class DecoderBlock(nn.Module):
 
-	def __init__(self, input_channels, output_channels, final = False):
+	def __init__(self, input_channels, output_channels):
 		super().__init__()
 
-		self.input_channels = input_channels
-		self.activation = nn.ReLU()
-		self.final = final
-
-		self.input_down_channel = nn.Conv2d(input_channels, input_channels//2, kernel_size = 1)
-		self.skip_down_channel = nn.Conv2d(input_channels, input_channels//2, kernel_size = 1)
-
-		self.concatenated_down_channel = nn.Conv2d(input_channels, input_channels//2, kernel_size = 5)
-		self.concatenated_conv = nn.Conv2d(input_channels//2, output_channels, kernel_size = 5)
+		self.conv = nn.Conv2d(input_channels, output_channels, kernel_size = 3, padding = 1, bias = False)
 		self.bn = nn.BatchNorm2d(output_channels)
+		self.activation = nn.ReLU()
 
+	def forward(self, X):
 
-	def forward(self, X, skipped_X):
-
-		X = self.input_down_channel(X)
+		X = self.conv(X)
+		X = self.bn(X)
 		X = self.activation(X)
 
-		skipped_X = self.skip_down_channel(skipped_X)
-		skipped_X = self.activation(skipped_X)
-
-		skipped_X = F.interpolate(skipped_X, size = [X.shape[-2], X.shape[-1]])
-		concatenated = torch.cat([X, skipped_X], 1)
-
-		concatenated = self.concatenated_down_channel(concatenated)
-		concatenated = self.activation(concatenated)
-		concatenated = self.concatenated_conv(concatenated)
-		concatenated = self.bn(concatenated)
-		
-
-		if(not self.final):
-			
-			concatenated = self.activation(concatenated)
-
-		return concatenated
+		return X

@@ -20,10 +20,8 @@ class MatteDataset(Dataset):
 	folders which contain the exported frames of foreground clips with alpha channels
 	"""
 
-	def __init__(self, bg_dir, fg_dir, comp_context_depth, comp_context_stride, bprime_context_depth, bprime_context_stride):
+	def __init__(self, bg_dir, fg_dir):
 		#_dir --> directory containing folders of images belonging to specific video clips for the background
-		#_context_depth --> how many frames on either side of the center frame to fetch
-		#_context_stride --> how many frames to space out the frames being selected for the motion cue packet
 
 		self.bg_dir = bg_dir
 		self.fg_dir = fg_dir
@@ -32,160 +30,53 @@ class MatteDataset(Dataset):
 		num_fg_clips = len(os.listdir(fg_dir))
 		self.bg_fg_combos = list(itertools.product(range(num_bg_clips), range(num_fg_clips)))
 
-		self.comp_context_depth = comp_context_depth
-		self.comp_context_stride = comp_context_stride
-
-		self.bprime_context_depth = bprime_context_depth
-		self.bprime_context_stride = bprime_context_stride
-
-
-	def get_frames_tensor(self, clip_dir, center_frame, context_depth, context_stride):
-
-		#Retrieves a center frame plus some number of frames on either side of it temporally dilated
-		#by some factor as a tensor of shape N x C x H x W
-
-		#Get a list of the filenames of the frames
-		frames_list = os.listdir(clip_dir)
-		#Count how many frames are in the list.
-		num_frames = len(frames_list)
-
-		#Based on the margin needed for temporal context, calculate a buffer representing the minimum
-		#distance the loop has to stay from the start and end of the frames to avoid referencing frames
-		#that don't exist
-		loop_offset = context_depth * context_stride
-
-		#the random_frame_index references the frame at the center of the packet, this index references 
-		#the one to start the collection loop at.
-		start_frame_index = center_frame - loop_offset
-
-		#this is the list that will store the names of the frames needed for the context packet to be constructed
-		frame_packet = []
-
-		#loop through the number of frames needed for the context packet.
-		for frame in range(context_depth * 2 + 1):
-
-			#step at a rate of self.bg_context_stride through the frames
-			file = frames_list[start_frame_index + (frame * context_stride)]
-			#get the filename of the current JPG frame being added to the cache
-			filename = os.fsdecode(file)
-			#open the frame as a PIL image
-			image = Image.open(clip_dir + filename)
-			#Turn the PIL image into a C x H x W tensor
-			image = transforms.ToTensor()(image)
-			#Add that image to the list we're using.
-			frame_packet.append(image)
-
-		#Convert the list of tensors into one big tensor
-		frames_tensor = torch.stack(frame_packet, 0)
-
-		return frames_tensor
-
 	def augment(self, bg_tensor, fg_tensor):
+		#Expects inputs of size C x H x W
 
-		#All input tensors assumed to be single examples with dimensions Time x Channels x Height x Width
+		aug_bg_params = {
 
-		#Now, it's time to take the foreground, background, and time-shifted bprime, and turn them into the composite, background-prime, and alpha
-		#Step one is to create a pair of two sets of strongly correlated (but not identical) Affine and Perspective transforms-- one for
-		#the background, one for the foreground. This helps correlate the two of them like they would be IRL.
+			'img': bg_tensor,
+			'angle': np.random.randint(-3, 4),
+			'translate':[
+				np.random.randint(-20, 21),
+				np.random.randint(-20, 21)
+			],
+			'shear':[
+				np.random.randint(-3, 4),
+				np.random.randint(-3, 4)
+			],
+			'scale':1
 
-		#Correlated transforms first, methinks. transform comes first, followed by how much it will linearly change per frame in the packet.
-		corr_rot = np.random.randint(-10, 11)
-		corr_rot_rate = np.random.randint(-3, 4)
+		}
+		aug_bg_tensor = TF.affine(**aug_bg_params)
 
-		corr_trans_x = np.random.randint(-100, 101)
-		corr_trans_x_rate = np.random.randint(-40, 41)
+		aug_png_params = {
 
-		corr_trans_y = np.random.randint(-100, 101)
-		corr_trans_y_rate = np.random.randint(-40, 41)
+			'img': fg_tensor,
+			'angle': np.random.randint(-15, 16),
+			'translate':[
+				np.random.randint(-100, 101),
+				np.random.randint(-100, 101)
+			],
+			'shear':[
+				np.random.randint(-15, 16),
+				np.random.randint(-15, 16)
+			],
+			'scale':1
 
-		corr_shear_x = np.random.randint(-15, 16)
-		corr_shear_x_rate = np.random.randint(-3, 4)
-
-		corr_shear_y = np.random.randint(-15, 16)
-		corr_shear_y_rate = np.random.randint(-3, 4)
-
-		correlation_factor = ((np.random.random() - 1) * 0.4) + 1
-
-		rand_fg_rot_offset = np.random.randint(-40, 40)
-
-		#initialize empty tensors of the right shape to hold the modified outputs.
-		corr_bg_tensor = torch.zeros_like(bg_tensor)
-		corr_png_tensor = torch.zeros_like(fg_tensor)
-
-		fg_shape = fg_tensor.shape
-		corr_fg_tensor = torch.zeros(fg_shape[0], 3, fg_shape[2], fg_shape[3])
-		corr_alpha_tensor = torch.zeros(fg_shape[0], 1, fg_shape[2], fg_shape[3])
-
-		do_bg_horizontal_flip = np.random.rand() > 0.5
-		do_fg_horizontal_flip = np.random.rand() > 0.5
-		do_bg_time_reverse = np.random.rand() > 0.5
-
-		for idx in range(bg_tensor.shape[0]):
-
-			corr_bg_params = {
-
-				'img': bg_tensor[idx, :, :, :],
-				'angle': corr_rot + idx * corr_rot_rate,
-				'translate':[
-					corr_trans_x + idx * corr_trans_x_rate,
-					corr_trans_y + idx * corr_trans_y_rate
-				],
-				'shear':[
-					corr_shear_x + idx * corr_shear_x_rate,
-					corr_shear_y + idx * corr_shear_y_rate
-				],
-				'scale':1.3
-
-			}
-			corr_bg_tensor[idx, :, :, :] = TF.affine(**corr_bg_params)
-			if(do_bg_horizontal_flip):
-				corr_bg_tensor[idx, :, :, :] = TF.hflip(corr_bg_tensor[idx, :, :, :])
+		}
+		aug_png_tensor = TF.affine(**aug_png_params)
 		
-
-
-			corr_png_params = {
-
-				'img': fg_tensor[idx, :, :, :],
-				'angle': (corr_rot + idx * corr_rot_rate) * correlation_factor + rand_fg_rot_offset,
-				'translate':[
-					(corr_trans_x + idx * corr_trans_x_rate) * correlation_factor,
-					(corr_trans_y + idx * corr_trans_y_rate) * correlation_factor
-				],
-				'shear':[
-					(corr_shear_x + idx * corr_shear_x_rate) * correlation_factor,
-					(corr_shear_y + idx * corr_shear_y_rate) * correlation_factor
-				],
-				'scale':1.2
-
-			}
-			corr_png_tensor[idx, :, :, :] = TF.affine(**corr_png_params)
-			if(do_fg_horizontal_flip):
-				corr_png_tensor[idx, :, :, :] = TF.hflip(corr_png_tensor[idx, :, :, :])
-			
-			corr_fg_tensor[idx, :, :, :] = corr_png_tensor[idx, :3, :, :]
-			corr_alpha_tensor[idx, :, :, :] = corr_png_tensor[idx, 3:4, :, :]
-
-
+		aug_fg_tensor = aug_png_tensor[:3, :, :]
+		aug_alpha_tensor = aug_png_tensor[3:4, :, :]
 
 		#add shadow augmentation
-		do_shadow = np.random.rand() > 0.6
+		do_shadow = np.random.rand() > 0.5
 
 		if do_shadow:
-			corr_bg_tensor = self.shadow_augment(corr_bg_tensor, corr_alpha_tensor)
-		if(do_bg_time_reverse):
-			corr_bg_tensor = torch.flip(corr_bg_tensor, [0])
+			aug_bg_tensor = self.shadow_augment(aug_bg_tensor, aug_alpha_tensor)
 
-		"""
-		#composite the warped foreground onto the warped background according to the warped alpha
-		composite_tensor = self.composite(corr_bg_tensor, corr_fg_tensor, corr_alpha_tensor)
-
-		#generate the "channel-block" version of the input, which no longer contains separate images and is just a blob of channels.
-		input_tensor = torch.cat([composite_tensor, bprime_tensor], dim = 0)
-		alpha_tensor = corr_alpha_tensor
-		"""
-	
-
-		return corr_fg_tensor, corr_bg_tensor, corr_alpha_tensor
+		return aug_fg_tensor, aug_bg_tensor, aug_alpha_tensor
 
 	#Does what it says on the box. Takes in a background, foreground, and alpha, and composites them into one image accordingly.
 
@@ -196,8 +87,8 @@ class MatteDataset(Dataset):
 		shadow_y = np.random.randint(0, 200)
 		shadow_shear = np.random.randint(-30, 30)
 		shadow_rotation = np.random.randint(-30, 30)
-		shadow_strength = np.random.randint(40, 90) / 100
-		shadow_blur = np.random.randint(2, 10) * 2 + 1
+		shadow_strength = np.random.randint(10, 90) / 100
+		shadow_blur = np.random.randint(2, 16) * 2 + 1
 
 		shadow_stamp = TF.affine(alpha_tensor, translate = [shadow_x, shadow_y], shear = shadow_shear, angle = shadow_rotation, scale = 1)
 		shadow_stamp = TF.gaussian_blur(shadow_stamp, shadow_blur)
@@ -222,45 +113,33 @@ class MatteDataset(Dataset):
 		fg_clip_dir = self.fg_dir + fg_clip_dir
 
 		#Get the number of frames in the background clip and foreground clip.
-		num_frames_bg = len(os.listdir(bg_clip_dir))
-		num_frames_fg = len(os.listdir(fg_clip_dir))
+		bg_frames_list = os.listdir(bg_clip_dir)
+		num_frames_bg = len(bg_frames_list)
+		fg_frames_list = os.listdir(fg_clip_dir)
+		num_frames_fg = len(fg_frames_list)
 
-		#Based on the margin needed for temporal context, calculate a buffer representing the minimum
-		#distance the loop has to stay from the start and end of the frames to avoid referencing frames
-		#that don't exist
-		comp_loop_offset = self.comp_context_depth * self.comp_context_stride + 1
+		#Select some random frames to use as background, foreground, and b-prime
+		bg_idx = np.random.randint(0, num_frames_bg)
 
-		#pick random center frame indexes within the range defined by the number of frames and the margin that
-		#needs to be kept to prevent errors.
-		bg_center = np.random.randint(comp_loop_offset, num_frames_bg - comp_loop_offset)
+		bprime_offset = np.random.randint(-5, 6)
+		bprime_idx = min(max(0, bg_idx + bprime_offset), num_frames_bg - 1)
 
-		#how much bprime should be offset in either direction temporally from b.
-		rand_bprime_offset = np.random.randint(1, 5)
-		bprime_loop_offset = comp_loop_offset + rand_bprime_offset
+		fg_idx = np.random.randint(0, num_frames_fg)
 
-		#Deal with the edge case where the bg center frame is too close to the margin, in which case, only temporally shift to one side.
-		#Otherwise, select bprime as a set of frames nearby but not identical to b.
-		if(bg_center <= bprime_loop_offset):
-			bprime_center = np.random.randint(bprime_loop_offset, bprime_loop_offset + rand_bprime_offset)
-		elif(bg_center >= num_frames_bg - bprime_loop_offset):
-			bprime_center = np.random.randint(num_frames_bg - bprime_loop_offset - rand_bprime_offset, num_frames_bg - bprime_loop_offset)
-		else:
-			bprime_center = np.random.randint(bg_center - rand_bprime_offset, bg_center + rand_bprime_offset)
-
-		#Select a random frame to act as the center of the foreground frame packet.
-		fg_center = np.random.randint(comp_loop_offset, num_frames_fg - comp_loop_offset)
-
-
-		#retrieve frame packets for the background and background-prime with the context depth and stride as passed to __init__()
-		bg_tensor = self.get_frames_tensor(bg_clip_dir, bg_center, self.comp_context_depth, self.comp_context_stride)
-		bprime_tensor = self.get_frames_tensor(bg_clip_dir, bprime_center, self.bprime_context_depth, self.bprime_context_stride)
-
-		#retrieve frame packets for the foreground and alpha with the context depth and stride as passed to __init__()
-		fg_tensor = self.get_frames_tensor(fg_clip_dir, fg_center, self.comp_context_depth, self.comp_context_stride)
+		bg_tensor = transforms.ToTensor()(Image.open(bg_clip_dir + bg_frames_list[bg_idx]))
+		fg_tensor = transforms.ToTensor()(Image.open(fg_clip_dir + fg_frames_list[fg_idx]))
 
 		fg_tensor, bg_tensor, alpha_tensor = self.augment(bg_tensor, fg_tensor)
 
-		
+		bprime_tensor = transforms.ToTensor()(Image.open(bg_clip_dir + bg_frames_list[bprime_idx]))
+
+		if(np.random.rand() > 0.5):
+			bg_tensor = TF.hflip(bg_tensor)
+			bprime_tensor = TF.hflip(bprime_tensor)
+
+		if(np.random.rand() > 0.5):
+			fg_tensor = TF.hflip(fg_tensor)
+			alpha_tensor = TF.hflip(alpha_tensor)
 
 		return fg_tensor, bg_tensor, alpha_tensor, bprime_tensor
 
@@ -268,31 +147,28 @@ class MatteDataset(Dataset):
 
 		return len(self.bg_fg_combos)
 
-
 """
 params = {
 	
-	'bg_dir':'train_set/backgrounds/',
-	'fg_dir':'train_set/foregrounds/',
-	'comp_context_depth': 1,
-	'comp_context_stride': 2,
-	'bprime_context_depth': 1,
-	'bprime_context_stride': 2
+	'bg_dir':'train_set_2/backgrounds/',
+	'fg_dir':'train_set_2/foregrounds/',
 
 }
 
-test_dataset = MatteDataset(**params)
-test_example, test_alpha = test_dataset[400]
 
-for i in range(test_example.shape[0]):
-	image = test_example[i, :, :, :]
-	image = transforms.ToPILImage()(image)
-	image.save(f'outputs/in{i}.jpg')
+for i in [0, 250, 500, 750, 1000, 1250, 1500, 1750, 2000, 2250, 2500, 2750, 3000]:
+	test_dataset = MatteDataset(**params)
+	fg, bg, alpha, bprime = test_dataset[i]
 
-for i in range(test_alpha.shape[0]):
-	image = test_alpha[i, :, :, :]
-	image = transforms.ToPILImage()(image)
-	image.save(f'outputs/alpha{i}.jpg')
+	fg = transforms.ToPILImage()(fg)
+	fg.save(f'outputs7/{i}fg.jpg')
 
+	bg = transforms.ToPILImage()(bg)
+	bg.save(f'outputs7/{i}bg.jpg')
 
+	alpha = transforms.ToPILImage()(alpha)
+	alpha.save(f'outputs7/{i}alpha.jpg')
+
+	bprime = transforms.ToPILImage()(bprime)
+	bprime.save(f'outputs7/{i}bprime.jpg')
 """

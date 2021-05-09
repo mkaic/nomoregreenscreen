@@ -28,8 +28,6 @@ device = 'cuda'
 #Given a defined model architecture with any transfer learning set up in the __init__() function
 #Given optimizer(s) for the model
 
-
-
 #LOOP some number of training examples.
 
 	#Generate INPUT FRAME PACKET using Dataset and DataLoader
@@ -48,10 +46,6 @@ dataset_params = {
 	
 	'bg_dir':'train_set_2/backgrounds/',
 	'fg_dir':'train_set_2/foregrounds/',
-	'comp_context_depth': 0,
-	'comp_context_stride': 2,
-	'bprime_context_depth': 0,
-	'bprime_context_stride': 2
 
 }
 
@@ -63,15 +57,15 @@ loader = DataLoader(dataset, batch_size = batch_size, shuffle = True, num_worker
 
 
 print('Initializing Network...')
-#How many channels the network should expect (this has to be calculated because we feed them as one big mega-channeled image block to the network)
-input_channels = ((dataset_params['comp_context_depth'] * 2 + 1) + (dataset_params['bprime_context_depth'] * 2 + 1)) * 3
-num_hidden_channels = 0
+num_hidden_channels = 32
 
 #Initialize the network which will produce a coarse alpha (1 chan), confidence map (1 chan), and a number of hidden channels (num_hidden_channels chan)...
 coarse = torch.load("model_saves/coarse_model_save_1.zip")
 coarse.train().to(device)
 #... which we will then feed to the refinement network to upsample and refine the area of least confidence.
-refine = RefinementNetwork(input_channels = input_channels, coarse_channels = num_hidden_channels + 5, output_channels = 1, chan = 32).train().to(device)
+refine = RefinementNetwork(\
+	input_channels = 6, \
+	coarse_channels = num_hidden_channels + 5).train().to(device)
 
 learning_rate = 0.00001
 
@@ -85,10 +79,10 @@ schedule1 = 1000
 break_point = 100000
 
 coarse_opt = torch.optim.Adam(coarse.parameters(), lr = learning_rate)
-coarse_scheduler = torch.optim.lr_scheduler.StepLR(coarse_opt, step_size = 1000, gamma = 0.98)
+coarse_scheduler = torch.optim.lr_scheduler.StepLR(coarse_opt, step_size = 2000, gamma = 0.98)
 
 refine_opt = torch.optim.Adam(refine.parameters(), lr = learning_rate)
-refine_scheduler = torch.optim.lr_scheduler.StepLR(refine_opt, step_size = 1000, gamma = 0.98)
+refine_scheduler = torch.optim.lr_scheduler.StepLR(refine_opt, step_size = 2000, gamma = 0.98)
 
 
 print('\nTraining...')
@@ -109,16 +103,14 @@ for epoch in range(3):
 
 			#Composite the augmented foreground onto the augmented background according to the augmented alpha.
 			composite_tensor = composite(real_background, real_foreground, real_alpha).view(batch_size, -1, real_foreground.shape[-2], real_foreground.shape[-1])
-			real_bprime = real_bprime.view(batch_size, -1, real_foreground.shape[-2], real_foreground.shape[-1])
+
 			#return the input tensor (composite plus b-prime) and the alpha_tensor. The input tensor is just a bunch of channels, the real_alpha is the central (singular) alpha
 			#corresponding to the target frame.
 			input_tensor = torch.cat([composite_tensor, real_bprime], 1)
-			input_tensor = input_tensor.view(batch_size, -1, input_tensor.shape[-2], input_tensor.shape[-1])
 
 			coarse_input = F.interpolate(input_tensor, size = [input_tensor.shape[-2]//4, input_tensor.shape[-1]//4])
 
 			#Grab the center frame of the alpha packet, this is the one we're trying to predict.
-			real_alpha = real_alpha.view(batch_size, -1, input_tensor.shape[-2], input_tensor.shape[-1])
 			real_center_alpha = real_alpha[:, dataset_params["comp_context_depth"]].unsqueeze(1)
 
 			#print(real_center_alpha.shape)
@@ -130,37 +122,26 @@ for epoch in range(3):
 			fake_coarse = coarse(coarse_input)
 			fake_coarse_alpha = color_ramp(0.1, 0.9, torch.clamp(fake_coarse[:,0:1,:,:], 0, 1))
 			fake_coarse_error = torch.sigmoid(fake_coarse[:,1:2,:,:])
-			#fake_coarse_foreground_residual = fake_coarse[:,2:5,:,:]
-
-			#print(fake_coarse_foreground_residual.shape)
-			#fake_coarse_hidden_channels = torch.relu(fake_coarse[:,5:,:,:])
+			fake_coarse_foreground_residual = fake_coarse[:,2:5,:,:]
+			fake_coarse_hidden_channels = torch.relu(fake_coarse[:,5:,:,:])
 
 			#The real error map is calculated as the squared difference between the real alpha and the fake alpha.
 			real_coarse_error = torch.abs(real_coarse_alpha.detach()-fake_coarse_alpha.detach())
 
-			#print(composite_tensor.shape)
 			real_coarse_composite = F.interpolate(composite_tensor, size = [composite_tensor.shape[-2]//4, composite_tensor.shape[-1]//4])
-			#print("real_coarse_composite shape", real_coarse_composite.shape
-
-			#print(composite_tensor[:, dataset_params['comp_context_depth']].shape, fake_coarse_foreground_residual.shape)
 
 			#construct the fake foreground
 			#fake_coarse_foreground = torch.clamp(real_coarse_composite[:, dataset_params["comp_context_depth"]*3:dataset_params["comp_context_depth"]*3 + 3] + fake_coarse_foreground_residual, 0, 1)
-			#foreground_penalty_zone = real_coarse_alpha > 0.1
-			real_coarse_foreground = F.interpolate(real_foreground[:, dataset_params["comp_context_depth"]], size = [real_foreground.shape[-2]//4, real_foreground.shape[-1]//4])
-			#print(real_coarse_foreground.shape)
-			#print(fake_coarse_foreground.shape)
-			#print(foreground_penalty_zone.shape)
-
+			foreground_penalty_zone = real_coarse_alpha > 0.1
+			real_coarse_foreground = F.interpolate(real_foreground, size = [real_foreground.shape[-2]//4, real_foreground.shape[-1]//4])
+		
 			coarse_sobel = torch.mean(sobel(fake_coarse_alpha))
 
 		#The loss of the coarse network is L1 loss of coarse alpha, L1 loss of coarse error, and L1 loss (only where real_alpha >0.1) of coarse foreground.
 		coarse_loss = criterion(fake_coarse_alpha, real_coarse_alpha) + \
 		criterion(fake_coarse_error,real_coarse_error) + \
+		torch.mean(torch.abs((real_coarse_foreground - fake_coarse_foreground) * foreground_penalty_zone)) + \
 		coarse_sobel
-
-		#to add foreground generation to loss:
-		#torch.mean(torch.abs((real_coarse_foreground - fake_coarse_foreground) * foreground_penalty_zone)) + \
 
 		#if it's before the training cutoff, then the loss is just for the coarse network.
 		coarse_opt.zero_grad()
@@ -208,59 +189,18 @@ for epoch in range(3):
 			image = transforms.ToPILImage()(image)
 			image.save(f'outputs7/{iteration}fake_alpha.jpg')
 
-			"""
 			image = torch.sigmoid(fake_coarse_foreground_residual[0])
 			image = transforms.ToPILImage()(image)
 			image.save(f'outputs7/{iteration}fake_foreground_residual.jpg')
-			"""
+			
 
 		if(iteration % 250 == 0):
 
 			print(coarse_loss)
-			print(refine_loss)
-
-		if(iteration > break_point):
-
-			break
-
-			
-
-		"""
-		if(iteration % 100 == 0 and iteration > schedule1):
-			image = fake_coarse_alpha[0,:, :, :].clone().to('cpu')
-			image = transforms.ToPILImage()(image)
-			image.save(f'outputs7/{iteration}fake_coarse_alpha.jpg')
-
-			image = fake_refined_alpha[0,:,:,:].clone().to('cpu')
-			image = transforms.ToPILImage()(image)
-			image.save(f'outputs7/{iteration}fake_refined_alpha.jpg')
-
-			image = fake_coarse_error[0,:, :, :].clone().to('cpu')
-			image = transforms.ToPILImage()(image)
-			image.save(f'outputs7/{iteration}fake_coarse_error.jpg')
-
-			image = real_alpha[0]
-			image = transforms.ToPILImage()(image)
-			image.save(f'outputs7/{iteration}real_alpha.jpg')
-		"""
-
-
-
+			print(refine_loss)	
 
 
 print('\nTraining completed successfully.')
 
 torch.save(coarse, "./model_saves/final_coarse_1.zip")
 torch.save(refine, "./model_saves/final_refine_1.zip")
-
-
-	
-
-"""
-def composite(self, bg_tensor, fg_tensor, alpha_tensor):
-
-		composite = (alpha_tensor * fg_tensor) + ((1 - alpha_tensor) * bg_tensor)
-
-		return composite
-
-"""
