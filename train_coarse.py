@@ -58,7 +58,7 @@ loader = DataLoader(dataset, batch_size = batch_size, shuffle = True, num_worker
 
 print('Initializing Network...')
 
-num_hidden_channels = 0
+num_hidden_channels = 32
 
 #Initialize the network which will produce a coarse alpha (1 chan), foreground (3 chan) confidence map (1 chan), and a number of hidden channels (num_hidden_channels chan)...
 coarse = CoarseMatteGenerator(input_channels = 6, output_channels = 5 + num_hidden_channels).train().to(device)

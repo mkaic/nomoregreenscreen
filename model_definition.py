@@ -144,9 +144,9 @@ class CoarseMatteGenerator(nn.Module):
 
 
 
-class RefinePatches(nn.Module):
+class RefinementNetwork(nn.Module):
 
-	def __init__(self, coarse_channels, input_channels, patch_size = 8):
+	def __init__(self, coarse_channels = 37, input_channels = 6, patch_size = 8):
 		super().__init__()
 
 		self.input_channels = input_channels
