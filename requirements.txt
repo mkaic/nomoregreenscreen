@@ -1,0 +1,10 @@
+torch
+torchvision
+torchaudio
+time
+tqdm
+os
+numpy
+kornia
+itertools
+Pillow

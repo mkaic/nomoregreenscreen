@@ -70,12 +70,6 @@ class MatteDataset(Dataset):
 		aug_fg_tensor = aug_png_tensor[:3, :, :]
 		aug_alpha_tensor = aug_png_tensor[3:4, :, :]
 
-		#add shadow augmentation
-		do_shadow = np.random.rand() > 0.5
-
-		if do_shadow:
-			aug_bg_tensor = self.shadow_augment(aug_bg_tensor, aug_alpha_tensor)
-
 		return aug_fg_tensor, aug_bg_tensor, aug_alpha_tensor
 
 	#Does what it says on the box. Takes in a background, foreground, and alpha, and composites them into one image accordingly.
@@ -140,6 +134,12 @@ class MatteDataset(Dataset):
 		if(np.random.rand() > 0.5):
 			fg_tensor = TF.hflip(fg_tensor)
 			alpha_tensor = TF.hflip(alpha_tensor)
+
+		#add shadow augmentation
+		do_shadow = np.random.rand() > 0.5
+
+		if do_shadow:
+			bg_tensor = self.shadow_augment(bg_tensor, alpha_tensor)
 
 		return fg_tensor, bg_tensor, alpha_tensor, bprime_tensor
 
