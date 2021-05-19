@@ -30,25 +30,73 @@ class MatteDataset(Dataset):
 		num_fg_clips = len(os.listdir(fg_dir))
 		self.bg_fg_combos = list(itertools.product(range(num_bg_clips), range(num_fg_clips)))
 
-	def augment(self, bg_tensor, fg_tensor):
+		self.device = 'cuda'
+
+	def augment(self, bg_tensor, fg_tensor, bprime_tensor):
 		#Expects inputs of size C x H x W
+
+		bg_rot = np.random.randint(-8, 9)
+		bg_trans_x = np.random.randint(-100, 100)
+		bg_trans_y = np.random.randint(-100, 100)
+		bg_shear_x = np.random.randint(-5, 6)
+		bg_shear_y = np.random.randint(-5, 6)
+		bg_scale = np.random.randint(8, 13) / 10
+
+		bg_brightness = np.random.randint(85, 116) / 100
+		bg_contrast = np.random.randint(85, 116) / 100
+		bg_saturation = np.random.randint(85, 116) / 100
+		bg_hue = np.random.randint(-5, 6) / 100
+
+		bg_blur = np.random.randint(90, 111) / 100
+
+		_, bg_h, bg_w = bg_tensor.shape
 
 		aug_bg_params = {
 
 			'img': bg_tensor,
-			'angle': np.random.randint(-3, 4),
+			'angle': bg_rot,
 			'translate':[
-				np.random.randint(-20, 21),
-				np.random.randint(-20, 21)
+				bg_trans_x,
+				bg_trans_y
 			],
 			'shear':[
-				np.random.randint(-3, 4),
-				np.random.randint(-3, 4)
+				bg_shear_x,
+				bg_shear_y
 			],
-			'scale':1
+			'scale': bg_scale
 
 		}
 		aug_bg_tensor = TF.affine(**aug_bg_params)
+
+		aug_bg_tensor = TF.adjust_gamma(aug_bg_tensor, bg_brightness)
+		aug_bg_tensor = TF.adjust_contrast(aug_bg_tensor, bg_contrast)
+		aug_bg_tensor = TF.adjust_saturation(aug_bg_tensor, bg_saturation)
+		aug_bg_tensor = TF.adjust_hue(aug_bg_tensor,  bg_hue)
+		#aug_bg_tensor = TF.adjust_sharpness(aug_bg_tensor, bg_blur)
+
+		aug_bprime_params = {
+
+			'img': bprime_tensor,
+			'angle': bg_rot + np.random.randint(-1, 2),
+			'translate':[
+				bg_trans_x + np.random.randint(-5, 6),
+				bg_trans_y + np.random.randint(-5, 6)
+			],
+			'shear':[
+				bg_shear_x + np.random.randint(-2, 3),
+				bg_shear_y + np.random.randint(-2, 3)
+			],
+			'scale': bg_scale + np.random.randint(-1, 2) / 100
+
+		}
+		aug_bprime_tensor = TF.affine(**aug_bprime_params)
+
+		aug_bprime_tensor = TF.adjust_gamma(aug_bprime_tensor, bg_brightness + np.random.randint(-10, 11) / 100)
+		aug_bprime_tensor = TF.adjust_contrast(aug_bprime_tensor, bg_contrast + np.random.randint(-10, 11) / 100)
+		aug_bprime_tensor = TF.adjust_saturation(aug_bprime_tensor, bg_saturation + np.random.randint(-10, 11) / 100)
+		aug_bprime_tensor = TF.adjust_hue(aug_bprime_tensor, bg_hue + np.random.randint(-3, 4) / 100)
+		#aug_bprime_tensor = TF.adjust_sharpness(aug_bprime_tensor, bg_blur)
+
 
 		aug_png_params = {
 
@@ -62,7 +110,7 @@ class MatteDataset(Dataset):
 				np.random.randint(-15, 16),
 				np.random.randint(-15, 16)
 			],
-			'scale':1
+			'scale': np.random.randint(3, 15) / 10
 
 		}
 		aug_png_tensor = TF.affine(**aug_png_params)
@@ -70,7 +118,15 @@ class MatteDataset(Dataset):
 		aug_fg_tensor = aug_png_tensor[:3, :, :]
 		aug_alpha_tensor = aug_png_tensor[3:4, :, :]
 
-		return aug_fg_tensor, aug_bg_tensor, aug_alpha_tensor
+		bg_gaussian = torch.randn(aug_bg_tensor.shape) * 0.05
+		fg_gaussian = torch.randn(aug_fg_tensor.shape) * 0.05
+		bprime_gaussian = torch.randn(aug_bprime_tensor.shape) * 0.05
+
+		aug_fg_tensor = torch.clamp(aug_fg_tensor + fg_gaussian, 0, 1)
+		aug_bg_tensor = torch.clamp(aug_bg_tensor + bg_gaussian, 0, 1)
+		aug_bprime_tensor = torch.clamp(aug_bprime_tensor + bprime_gaussian, 0, 1)
+
+		return aug_fg_tensor, aug_bg_tensor, aug_alpha_tensor, aug_bprime_tensor
 
 	#Does what it says on the box. Takes in a background, foreground, and alpha, and composites them into one image accordingly.
 
@@ -115,17 +171,16 @@ class MatteDataset(Dataset):
 		#Select some random frames to use as background, foreground, and b-prime
 		bg_idx = np.random.randint(0, num_frames_bg)
 
-		bprime_offset = np.random.randint(-5, 6)
+		bprime_offset = 0
 		bprime_idx = min(max(0, bg_idx + bprime_offset), num_frames_bg - 1)
 
 		fg_idx = np.random.randint(0, num_frames_fg)
 
 		bg_tensor = transforms.ToTensor()(Image.open(bg_clip_dir + bg_frames_list[bg_idx]))
 		fg_tensor = transforms.ToTensor()(Image.open(fg_clip_dir + fg_frames_list[fg_idx]))
-
-		fg_tensor, bg_tensor, alpha_tensor = self.augment(bg_tensor, fg_tensor)
-
 		bprime_tensor = transforms.ToTensor()(Image.open(bg_clip_dir + bg_frames_list[bprime_idx]))
+
+		fg_tensor, bg_tensor, alpha_tensor, bprime_tensor = self.augment(bg_tensor, fg_tensor, bprime_tensor)
 
 		if(np.random.rand() > 0.5):
 			bg_tensor = TF.hflip(bg_tensor)
