@@ -159,25 +159,30 @@ class RefinementNetwork(nn.Module):
 		self.conv3 = nn.Conv2d(16 + self.input_channels, 12, kernel_size = 3)
 		self.conv4 = nn.Conv2d(12, 4, kernel_size = 3)
 
+		self.bn1 = nn.BatchNorm2d(24)
+		self.bn2 = nn.BatchNorm2d(16)
+		self.bn3 = nn.BatchNorm2d(12)
+
 		self.activation = nn.ReLU()
 
 
 	def forward(self, start_patches, middle_patches):
 
 		z1 = self.conv1(start_patches)
+		z1 = self.bn1(z1)
 		x1 = self.activation(z1)
 
 		z2 = self.conv2(x1)
+		z2 = self.bn2(z2)
 		x2 = self.activation(z2)
 		x2 = F.interpolate(x2, size = middle_patches.shape[-2:])
 
 		z3 = torch.cat([x2, middle_patches], 1)
 		z3 = self.conv3(z3)
+		z3 = self.bn3(z3)
 		x3 = self.activation(z3)
 
 		z4 = self.conv4(x3)
 
-		end_patches = torch.sigmoid(z4)
-
-		return end_patches
+		return z4
 
