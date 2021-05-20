@@ -19,7 +19,8 @@ import cv2 as cv
 
 import os
 
-from model_definition import *
+from coarse_definition import CoarseMatteGenerator
+from refine_definition import RefinementNetwork
 from train_utils import get_image_patches, replace_image_patches, color_ramp
 
 device = "cuda"
@@ -100,8 +101,11 @@ matcher = cv.DescriptorMatcher_create(cv.DESCRIPTOR_MATCHER_BRUTEFORCE_HAMMING)
 
 class UserInputDataset(Dataset):
 
-	def __init__(self):
+	def __init__(self, depth = 5, stride = 3):
 		super().__init__()
+
+		self.depth = depth
+		self.stride = stride
 
 		return
 
@@ -120,12 +124,15 @@ class UserInputDataset(Dataset):
 		
 		#always temporally center our search
 		background_start_idx = int(source_idx / source_len * background_len)
-		search_start_idx = max(0, background_start_idx - search_width)
-		search_end_idx = min(background_len, background_start_idx + search_width)
+		search_start_idx = max(0, background_start_idx - self.depth*self.stride)
+		search_end_idx = min(background_len, background_start_idx + self.depth*self.stride)
 		best_background = np.zeros_like(source_img)
 
-		for background_idx, background_name in enumerate(background_list\
-			[search_start_idx: search_end_idx], start = search_start_idx):
+		#getting strided files is a hassle, because I can't use enumerate to get the indices.
+
+		for background_idx, background_name in zip(range(search_start_idx, search_end_idx, self.stride),\
+			(background_list\
+			[search_start_idx : search_end_idx : self.stride], start = search_start_idx)):
 			
 			matches = matcher.match(background_des_list[background_idx], source_des_list[source_idx], None)
 
@@ -209,10 +216,14 @@ with torch.no_grad():
 		#Now, feed the outputs of the coarse generator into the refinement network, which will refine patches.
 		fake_refined_patches = Refine(start_patches, middle_patches)
 
-		mega_upscaled_fake_coarse_alpha = F.interpolate(fake_coarse_alpha.detach(), size = [input_tensor.shape[-2], input_tensor.shape[-1]])
-		fake_refined_alpha = replace_image_patches(images = mega_upscaled_fake_coarse_alpha, patches = fake_refined_patches, indices = indices)
+		fake_refined_patches = refine(start_patches, middle_patches)
 
-		RGBA = torch.cat([input_tensor[:, :3], fake_refined_alpha], 1)
+		mega_upscaled_fake_coarse = F.interpolate(fake_coarse[:, :4].detach(), size = input_tensor.shape[-2:])
+		fake_refined = replace_image_patches(images = mega_upscaled_fake_coarse, patches = fake_refined_patches, indices = indices)
+		fake_refined_alpha = color_ramp(0.05, 0.95, torch.clamp(fake_refined[:, 0:1], 0, 1))
+		fake_refined_foreground = torch.clamp(fake_refined[:, 1:4] + composite_tensor, 0, 1)
+
+		RGBA = torch.cat([fake_refined_foreground, fake_refined_alpha], 1)
 
 		for j in range(input_tensor.shape[0]):
 			image = transforms.ToPILImage()(RGBA[j])

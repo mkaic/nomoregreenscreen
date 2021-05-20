@@ -6,5 +6,4 @@ numpy
 kornia
 more-itertools
 Pillow
-cupy-cuda101
 random

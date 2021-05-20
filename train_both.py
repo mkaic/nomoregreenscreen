@@ -50,7 +50,7 @@ dataset_params = {
 
 }
 
-batch_size = 4
+batch_size = 2
 
 #Initialize the dataset and the loader to feed the data to the network.
 
@@ -62,7 +62,7 @@ ImageFeeder = ImageOpener(\
 
 Pipeline = AugmentationPipeline(\
 	dataset = ImageFeeder, \
-	num_threads = 4, \
+	num_threads = 8, \
 	device_id = 0,
 	batch_size = batch_size)
 
@@ -78,7 +78,7 @@ print('Initializing Network...')
 num_hidden_channels = 32
 
 #Initialize the network which will produce a coarse alpha (1 chan), foreground (3 chan) confidence map (1 chan), and a number of hidden channels (num_hidden_channels chan)...
-coarse = torch.load("model_saves/coarse_generator_network_epoch_7.zip").train().to(device)
+coarse = torch.load("model_saves/proper_coarse_epoch195000.zip").train().to(device)
 refine = RefinementNetwork(coarse_channels = 5 + num_hidden_channels).train().to(device)
 
 use_amp = False
@@ -100,10 +100,6 @@ for iteration in tqdm(range(600000)):
 	with torch.cuda.amp.autocast(enabled = use_amp):
 
 		real_background, real_foreground, real_bprime, real_alpha = next(DALIDataloader)
-		real_background = real_background.float()/256
-		real_foreground = real_foreground.float()/256
-		real_bprime = real_bprime.float()/256
-		real_alpha = real_alpha.float()/256
 
 		"""
 		real_foreground = real_foreground.to(device)
@@ -191,7 +187,7 @@ for iteration in tqdm(range(600000)):
 	iteration += 1
 
 
-	if(iteration % 500 == 0):
+	if(iteration % 1000 == 0):
 		image = fake_coarse_alpha[0]
 		image = transforms.ToPILImage()(image)
 		image.save(f'outputs7/{iteration}C_fake_coarse_alpha.jpg')
@@ -215,18 +211,22 @@ for iteration in tqdm(range(600000)):
 		image = fake_refined_foreground[0]
 		image = transforms.ToPILImage()(image)
 		image.save(f'outputs7/{iteration}F_refined_foreground.jpg')
+
+		image = real_coarse_composite[0]
+		image = transforms.ToPILImage()(image)
+		image.save(f'outputs7/{iteration}E_coarse_composite.jpg')
 		
 
-	if(iteration % 500 == 0):
+	if(iteration % 1000 == 0):
 
 		print(coarse_loss)
 		print(refine_loss)
 
 
-	if(iteration % 10000 == 0):
+	if(iteration % 15000 == 0):
 
-		torch.save(coarse, f"./model_saves/coarse_generator_network_epoch_{epoch}.zip")
-		torch.save(refine, f"./model_saves/refinement_network_epoch_{epoch}.zip")
+		torch.save(coarse, f"./model_saves/coarse_generator_network_epoch_{iteration}.zip")
+		torch.save(refine, f"./model_saves/refinement_network_epoch_{iteration}.zip")
 
 
 print('\nTraining completed successfully.')

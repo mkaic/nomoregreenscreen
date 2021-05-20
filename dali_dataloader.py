@@ -1,4 +1,3 @@
-print('loading libraries...')
 
 import torch
 from nvidia.dali.pipeline import Pipeline
@@ -14,7 +13,6 @@ import itertools
 from PIL import Image
 import numpy as np
 import time
-import cupy as cp
 import imageio
 
 #print('Initializing Dataset...')
@@ -136,10 +134,10 @@ class AugmentationPipeline(Pipeline):
 		bprime = fn.copy(bg)
 		alpha = fn.decoders.image(alpha_read, device = 'mixed')
 
-		bg = fn.resize(bg, size = [1920, 1080])
-		fg = fn.resize(fg, size = [1920, 1080])
-		bprime = fn.resize(bprime, size = [1920, 1080])
-		alpha = fn.resize(alpha, size = [1920, 1080])
+		bg = fn.resize(bg, resize_x = 1920, resize_y = 1080)
+		fg = fn.resize(fg, resize_x = 1920, resize_y = 1080)
+		bprime = fn.resize(bprime, resize_x = 1920, resize_y = 1080)
+		alpha = fn.resize(alpha, resize_x = 1920, resize_y = 1080)
 
 
 		bg_rot = fn.random.uniform(range = [-8.0, 9.0])
@@ -172,26 +170,26 @@ class AugmentationPipeline(Pipeline):
 
 		bg = fn.color_twist(bg, brightness = bg_brightness, saturation = bg_saturation, hue = bg_hue)
 		bg = fn.contrast(bg, contrast = bg_contrast)
-		bg = fn.rotate(bg, angle = bg_rot, size = [1920, 1080])
+		bg = fn.rotate(bg, angle = bg_rot, keep_size = True)
 		bg = fn.gaussian_blur(bg, sigma = bg_blur, window_size = 3)
 		bg = fn.flip(bg, horizontal = bg_flip_chance)
-		bg = DALImath.clamp(bg + fn.random.normal(bg) * 5, 0, 256)
+		bg = DALImath.clamp(bg + fn.random.normal(bg) * 10, 0, 256)
 
 		fg = fn.color_twist(fg, brightness = fg_brightness, saturation = fg_saturation, hue = fg_hue)
 		fg = fn.contrast(fg, contrast = fg_contrast)
-		fg = fn.rotate(fg, angle = fg_rot, size = [1920, 1080])
+		fg = fn.rotate(fg, angle = fg_rot, keep_size = True)
 		fg = fn.gaussian_blur(fg, sigma = fg_blur, window_size = 3)
 		fg = fn.flip(fg, horizontal = fg_flip_chance)
-		bg = DALImath.clamp(fg + fn.random.normal(fg) * 5, 0, 256)
+		fg = DALImath.clamp(fg + fn.random.normal(fg) * 10, 0, 256)
 		
 		bprime = fn.color_twist(bprime, brightness = bprime_brightness, saturation = bprime_saturation, hue = bprime_hue)
 		bprime = fn.contrast(bprime, contrast = bprime_contrast)
-		bprime = fn.rotate(bprime, angle = bprime_rot, size = [1920, 1080])
+		bprime = fn.rotate(bprime, angle = bprime_rot, keep_size = True)
 		bprime = fn.gaussian_blur(bprime, sigma = bprime_blur, window_size = 3)
 		bprime = fn.flip(bprime, horizontal = bg_flip_chance)
-		bg = DALImath.clamp(bprime + fn.random.normal(bprime) * 5, 0, 256)
+		bprime = DALImath.clamp(bprime + fn.random.normal(bprime) * 10, 0, 256)
 
-		alpha = fn.rotate(alpha, angle = alpha_rot, size = [1920, 1080])
+		alpha = fn.rotate(alpha, angle = alpha_rot, keep_size = True)
 		alpha = fn.gaussian_blur(alpha, sigma = alpha_blur, window_size = 3)
 		alpha = fn.flip(alpha, horizontal = fg_flip_chance)
 
@@ -212,19 +210,24 @@ class MyCustomDataloader(object):
 
 		tensor_dict = next(self.loader)[0]
 
-		fg = tensor_dict['fg'].permute(0,3,2,1)
-		bg = tensor_dict['bg'].permute(0,3,2,1)
-		bprime = tensor_dict['bprime'].permute(0,3,2,1)
-		alpha = tensor_dict['alpha'].permute(0,3,2,1)
+		fg = tensor_dict['fg'].permute(0,3,1,2)
+		bg = tensor_dict['bg'].permute(0,3,1,2)
+		bprime = tensor_dict['bprime'].permute(0,3,1,2)
+		alpha = tensor_dict['alpha'].permute(0,3,1,2)
 		alpha = alpha[:, :1]
 
-		png = torch.cat([fg, alpha], 1)
+		bg = bg.float()/256
+		fg = fg.float()/256
+		bprime = bprime.float()/256
+		alpha = alpha.float()/256
+
+		png = torch.cat([fg, alpha], dim = 1)
 
 		bg_trans_x = np.random.randint(-100, 100)
 		bg_trans_y = np.random.randint(-100, 100)
 		bg_shear_x = np.random.randint(-5, 6)
 		bg_shear_y = np.random.randint(-5, 6)
-		bg_scale = np.random.randint(8, 13) / 10
+		bg_scale = np.random.randint(10, 13) / 10
 
 		aug_bg_params = {
 
@@ -277,22 +280,24 @@ class MyCustomDataloader(object):
 		}
 		aug_png_tensor = TF.affine(**aug_png_params)
 		
-		aug_fg_tensor = aug_png_tensor[:, :3, :, :]
-		aug_alpha_tensor = aug_png_tensor[:, 3:4, :, :]
+		aug_fg_tensor = aug_png_tensor[:, :3]
+		aug_alpha_tensor = aug_png_tensor[:, 3:4]
+
 
 		if(np.random.randint(0, 10) > 6):
 			shadow_x = np.random.randint(0, 200)
 			shadow_y = np.random.randint(0, 200)
 			shadow_shear = np.random.randint(-30, 30)
 			shadow_rotation = np.random.randint(-30, 30)
-			shadow_strength = np.random.randint(10, 90) / 100
+			shadow_strength = np.random.randint(20, 80) / 100
 			shadow_blur = np.random.randint(2, 16) * 2 + 1
 
 			shadow_stamp = TF.affine(aug_alpha_tensor, translate = [shadow_x, shadow_y], shear = shadow_shear, angle = shadow_rotation, scale = 1)
 			shadow_stamp = TF.gaussian_blur(shadow_stamp, shadow_blur)
 			shadow_stamp = shadow_stamp * shadow_strength
 
-			aug_bg_tensor = aug_bg_tensor - aug_bg_tensor * shadow_stamp
+			aug_bg_tensor = aug_bg_tensor - (aug_bg_tensor * shadow_stamp)
+
 
 		return (aug_bg_tensor, aug_fg_tensor, aug_bprime_tensor, aug_alpha_tensor)
 

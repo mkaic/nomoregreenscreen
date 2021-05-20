@@ -61,7 +61,7 @@ ImageFeeder = ImageOpener(\
 
 Pipeline = AugmentationPipeline(\
 	dataset = ImageFeeder, \
-	num_threads = 4, \
+	num_threads = 8, \
 	device_id = 0,
 	batch_size = batch_size)
 
@@ -94,10 +94,6 @@ for iteration in tqdm(range(600000)):
 	with torch.cuda.amp.autocast(enabled = use_amp):
 
 		real_background, real_foreground, real_bprime, real_alpha = next(DALIDataloader)
-		real_background = real_background.float()/256
-		real_foreground = real_foreground.float()/256
-		real_bprime = real_bprime.float()/256
-		real_alpha = real_alpha.float()/256
 
 		"""
 		real_foreground = real_foreground.to(device)
@@ -108,6 +104,7 @@ for iteration in tqdm(range(600000)):
 
 		#Composite the augmented foreground onto the augmented background according to the augmented alpha.
 		composite_tensor = composite(real_background, real_foreground, real_alpha)
+		
 
 		#return the input tensor (composite plus b-prime) and the alpha_tensor. The input tensor is just a bunch of channels, the real_alpha is the central (singular) alpha
 		#corresponding to the target frame.
@@ -131,7 +128,7 @@ for iteration in tqdm(range(600000)):
 			fake_coarse_hidden_channels = torch.relu(fake_coarse[:,5:])
 
 		#The real error map is calculated as the squared difference between the real alpha and the fake alpha.
-		real_coarse_error = torch.abs(real_coarse_alpha.detach()-fake_coarse_alpha.detach())
+		real_coarse_error = torch.clamp(torch.abs(real_coarse_alpha.detach()-fake_coarse_alpha.detach()), 0, 1)
 
 		#construct the fake foreground
 		#fake_coarse_foreground = torch.clamp(real_coarse_composite[:, dataset_params["comp_context_depth"]*3:dataset_params["comp_context_depth"]*3 + 3] + fake_coarse_foreground_residual, 0, 1)
@@ -157,7 +154,7 @@ for iteration in tqdm(range(600000)):
 	iteration += 1
 
 
-	if(iteration % 500 == 0):
+	if(iteration % 1000 == 0):
 		image = fake_coarse_alpha[0]
 		image = transforms.ToPILImage()(image)
 		image.save(f'outputs7/{iteration}C_fake_coarse_alpha.jpg')
@@ -173,13 +170,17 @@ for iteration in tqdm(range(600000)):
 		image = fake_coarse_error[0]
 		image = transforms.ToPILImage()(image)
 		image.save(f'outputs7/{iteration}D_fake_error.jpg')
+
+		image = real_coarse_composite[0]
+		image = transforms.ToPILImage()(image)
+		image.save(f'outputs7/{iteration}E_coarse_composite.jpg')
 		
 
-	if(iteration % 500 == 0):
+	if(iteration % 1000 == 0):
 
 		print(coarse_loss)	
 
-	if(iteration % 8000 == 0):
+	if(iteration % 15000 == 0):
 
 		torch.save(coarse, f"./model_saves/proper_coarse_epoch{iteration}.zip")
 
