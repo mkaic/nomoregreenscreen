@@ -18,7 +18,6 @@ import time
 import cv2 as cv
 
 import os
-
 from coarse_definition import CoarseMatteGenerator
 from refine_definition import RefinementNetwork
 from train_utils import get_image_patches, replace_image_patches, color_ramp
@@ -27,8 +26,8 @@ device = "cuda"
 
 #Load coarse gen and refinement networks from their saved weights on disks.
 print("Loading neural networks...")
-Coarse = torch.load('model_saves/final_coarse_1.zip').eval().to(device)
-Refine = torch.load('model_saves/final_refine_1.zip').eval().to(device)
+Coarse = torch.load('model_saves/coarse_generator_network_epoch_525000.zip').eval().to(device)
+Refine = torch.load('model_saves/refinement_network_epoch_525000.zip').eval().to(device)
 search_width = 10
 
 #Allows me to run this from the command line with custom inputs/outputs specified there.
@@ -36,20 +35,22 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--source', '-s', help = 'Path to the video you want to remove the background FROM.')
 parser.add_argument('--background', '-b', help = 'Path to the video you want to give the model as reference for what JUST THE BACKGROUND looks like.')
 parser.add_argument('--output', '-o', help = 'Path to output the final RGBA PNG sequence to.')
-parser.add_argument('--searchwidth', '-w', help = 'how many frames temprally away from the source frame to check in the background video')
+parser.add_argument('--searchdepth', '-w', help = 'how many frames temprally away from the source frame to check in the background video', default = 10)
+parser.add_argument('--searchstride', '-j', help = 'how much skimming the algorithm does', default = 2)
+
 args = parser.parse_args()
+
+args.searchdepth = int(args.searchdepth)
+args.searchstride = int(args.searchstride)
 
 print("Preprocessing source video...")
 #Preprocess the background to a series of jpgs, and the foreground to PNGs (so it's lossless). It ain't pretty but it's necessary.
-os.system(f'ffmpeg -loglevel error -i {args.source} -vsync 0 cached_frames/source/%04d.png')
+os.system(f'ffmpeg -loglevel error -i {args.source} -vsync 0 -q:v 2 cached_frames/source/%04d.jpg')
 print("Preprocessing background video...")
 os.system(f'ffmpeg -loglevel error -i {args.background} -vsync 0 -q:v 2 cached_frames/background/%04d.jpg')
 
 if(not os.path.exists(args.output)):
 	os.mkdir(args.output)
-
-if(args.searchwidth):
-	search_width = int(args.searchwidth)
 
 print('Detecting features in source video...')
 
@@ -101,7 +102,7 @@ matcher = cv.DescriptorMatcher_create(cv.DESCRIPTOR_MATCHER_BRUTEFORCE_HAMMING)
 
 class UserInputDataset(Dataset):
 
-	def __init__(self, depth = 5, stride = 3):
+	def __init__(self, depth = 5, stride = 2):
 		super().__init__()
 
 		self.depth = depth
@@ -120,7 +121,7 @@ class UserInputDataset(Dataset):
 		source_img = np.asarray(Image.open(f'cached_frames/source/{source_name}'))
 
 		#tick = time.time()
-		best_score = -1
+		best_score = 10000
 		
 		#always temporally center our search
 		background_start_idx = int(source_idx / source_len * background_len)
@@ -130,16 +131,16 @@ class UserInputDataset(Dataset):
 
 		#getting strided files is a hassle, because I can't use enumerate to get the indices.
 
-		for background_idx, background_name in zip(range(search_start_idx, search_end_idx, self.stride),\
-			(background_list\
-			[search_start_idx : search_end_idx : self.stride], start = search_start_idx)):
+		for background_idx, background_name in zip(\
+			list(range(search_start_idx, search_end_idx, self.stride)),\
+			background_list[search_start_idx : search_end_idx : self.stride]):
 			
 			matches = matcher.match(background_des_list[background_idx], source_des_list[source_idx], None)
 
 			#sort the matches by lowest distance up. the lambda is just a little function that reads like this:
 			# function such that for each item x, retrieve the distance property of x.
 			matches.sort(key = lambda x: x.distance, reverse = False)
-			top_matches = matches[:int(len(matches)*0.15)]
+			top_matches = matches[:int(len(matches)*0.25)]
 
 			source_kp = source_kp_list[source_idx]
 			source_coords = np.float32([source_kp[match.trainIdx].pt for match in top_matches]).reshape(-1, 1, 2)
@@ -160,13 +161,16 @@ class UserInputDataset(Dataset):
 			warped_background = cv.warpPerspective(background_img, H, (w,h))
 			warped_mask = cv.warpPerspective(np.ones((h,w)), H, (w,h))
 
+			mean_pixel_error = np.mean(np.abs(warped_background - source_img) * np.expand_dims(warped_mask, axis = 2))
+
 			warped_background[warped_mask != 1] = source_img[warped_mask != 1]
+			overall_coverage = np.mean(warped_mask) ** 30 * 100
 
-			mean_pixel_error = np.mean(np.abs(warped_background - source_img))
+			score = mean_pixel_error - (overall_coverage * 2) - (inliers_total/2)
 
-			score = inliers_total
+			#print(int(mean_pixel_error), int(overall_coverage), int(inliers_total))
 
-			if (score > best_score):
+			if (score < best_score):
 
 				best_unwarped_background = background_img
 				best_background = warped_background
@@ -179,35 +183,42 @@ class UserInputDataset(Dataset):
 		background_tensor = transforms.ToTensor()(background_PIL)
 		source_tensor = transforms.ToTensor()(source_PIL)
 
-		"""
+		
 		background_PIL.save(f'alignment_test/{source_idx}background.jpg')
 		source_PIL.save(f'alignment_test/{source_idx}source.jpg')
 		unwarped_PIL.save(f'alignment_test/{source_idx}unwarped.jpg')
 
 		#print(time.time() - tick)
-		"""
+		
 
-		return torch.cat([source_tensor, background_tensor], 0)
+		return source_tensor, background_tensor
 
-dataset = UserInputDataset()
+dataset = UserInputDataset(depth = args.searchdepth, stride = args.searchstride)
 batch_size = 4
-dataloader = DataLoader(dataset, batch_size = batch_size, shuffle = False, num_workers = 4, pin_memory = True)
+dataloader = DataLoader(dataset, batch_size = batch_size, shuffle = False, num_workers = 6, pin_memory = True)
 
 with torch.no_grad():
 
 	batch_number = 0
-	for input_tensor in tqdm(dataloader):
+	for composite_tensor, background_tensor in tqdm(dataloader):
 
-		input_tensor = input_tensor.to(device)
+		background_tensor = background_tensor.to(device)
+		composite_tensor = composite_tensor.to(device)
+
+		input_tensor = torch.cat([composite_tensor, background_tensor], 1)
 		coarse_input = F.interpolate(input_tensor, size = [input_tensor.shape[-2]//4, input_tensor.shape[-1]//4])
 
+		#Generate a fake coarse alpha, along with a guessed error map and some hidden channel data. Oh yeah and the foreground residual
 		fake_coarse = Coarse(coarse_input)
-		fake_coarse_alpha = color_ramp(0.1, 0.9, torch.clamp(fake_coarse[:,0:1,:,:], 0, 1))
-		fake_coarse_error = torch.sigmoid(fake_coarse[:,1:2,:,:])
+		fake_coarse_alpha = torch.clamp(fake_coarse[:, 0:1], 0, 1)
+		fake_coarse_foreground_residual = fake_coarse[:, 1:4]
+		fake_coarse_error = torch.clamp(fake_coarse[:, 4:5], 0, 1)
+
+		if(fake_coarse.shape[1] > 5):
+			fake_coarse_hidden_channels = torch.relu(fake_coarse[:,5:])
 
 		downsampled_input_tensor = F.interpolate(input_tensor, [input_tensor.shape[-2]//2, input_tensor.shape[-1]//2])
 		upscaled_coarse_outputs = F.interpolate(fake_coarse, [input_tensor.shape[-2]//2, input_tensor.shape[-1]//2])
-
 		start_patch_source = torch.cat([downsampled_input_tensor, upscaled_coarse_outputs], 1)
 
 		start_patches, indices = get_image_patches(start_patch_source.detach(), fake_coarse_error.detach(), patch_size = 8, stride = 2, k = 10000)
@@ -215,8 +226,6 @@ with torch.no_grad():
 
 		#Now, feed the outputs of the coarse generator into the refinement network, which will refine patches.
 		fake_refined_patches = Refine(start_patches, middle_patches)
-
-		fake_refined_patches = refine(start_patches, middle_patches)
 
 		mega_upscaled_fake_coarse = F.interpolate(fake_coarse[:, :4].detach(), size = input_tensor.shape[-2:])
 		fake_refined = replace_image_patches(images = mega_upscaled_fake_coarse, patches = fake_refined_patches, indices = indices)
@@ -227,7 +236,9 @@ with torch.no_grad():
 
 		for j in range(input_tensor.shape[0]):
 			image = transforms.ToPILImage()(RGBA[j])
-			image.save(f'{args.output}/{batch_number*batch_size + j}.png')
+			output_idx = batch_number*batch_size + j
+			output_idx = str(output_idx).zfill(5)
+			image.save(f'{args.output}/{output_idx}.png')
 
 		batch_number += 1
 

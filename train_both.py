@@ -125,12 +125,10 @@ for iteration in tqdm(range(600000)):
 		fake_coarse_alpha = torch.clamp(fake_coarse[:, 0:1], 0, 1)
 		fake_coarse_foreground_residual = fake_coarse[:, 1:4]
 		fake_coarse_error = torch.clamp(fake_coarse[:, 4:5], 0, 1)
+		fake_coarse_hidden_channels = torch.relu(fake_coarse[:,5:])
 
 		real_coarse_composite = F.interpolate(composite_tensor, size = [composite_tensor.shape[-2]//4, composite_tensor.shape[-1]//4])
 		fake_coarse_foreground = torch.clamp(real_coarse_composite + fake_coarse_foreground_residual, 0, 1)
-
-		if(num_hidden_channels > 0):
-			fake_coarse_hidden_channels = torch.relu(fake_coarse[:,5:])
 
 		#The real error map is calculated as the squared difference between the real alpha and the fake alpha.
 		real_coarse_error = torch.abs(real_coarse_alpha.detach()-fake_coarse_alpha.detach())
@@ -168,7 +166,7 @@ for iteration in tqdm(range(600000)):
 		#Now, feed the outputs of the coarse generator into the refinement network, which will refine patches.
 		fake_refined_patches = refine(start_patches, middle_patches)
 
-		mega_upscaled_fake_coarse = F.interpolate(fake_coarse[:, :4].detach(), size = input_tensor.shape[-2:])
+		mega_upscaled_fake_coarse = F.interpolate(fake_coarse[:, :4].detach(), size = input_tensor.shape[-2:], mode = 'bilinear', align_corners = True)
 		fake_refined = replace_image_patches(images = mega_upscaled_fake_coarse, patches = fake_refined_patches, indices = indices)
 		fake_refined_alpha = color_ramp(0.05, 0.95, torch.clamp(fake_refined[:, 0:1], 0, 1))
 		fake_refined_foreground = torch.clamp(fake_refined[:, 1:4] + composite_tensor, 0, 1)

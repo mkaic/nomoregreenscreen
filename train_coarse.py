@@ -2,22 +2,17 @@
 print('Loading Libraries...')
 import torch
 import torch.nn as nn
-import torchvision
 import torchvision.transforms as transforms
 import torch.nn.functional as F
-from torch.utils.data import Dataset, DataLoader
 import os
 from PIL import Image
 import numpy as np
 import time
 from tqdm import tqdm
-from torchsummary import summary
 from dali_dataloader import AugmentationPipeline, ImageOpener, MyCustomDataloader
 from nvidia.dali.plugin.pytorch import DALIGenericIterator
-
 from kornia.filters import sobel
-
-from model_definition import *
+from coarse_definition import CoarseMatteGenerator
 from train_utils import *
 device = 'cuda'
 
@@ -49,7 +44,7 @@ dataset_params = {
 
 }
 
-batch_size = 4
+batch_size = 3
 
 #Initialize the dataset and the loader to feed the data to the network.
 
@@ -61,33 +56,37 @@ ImageFeeder = ImageOpener(\
 
 Pipeline = AugmentationPipeline(\
 	dataset = ImageFeeder, \
-	num_threads = 8, \
+	num_threads = 4, \
 	device_id = 0,
 	batch_size = batch_size)
 
 Pipeline.build()
-
 Loader = DALIGenericIterator(pipelines = [Pipeline], output_map = ['fg', 'bg', 'bprime', 'alpha'])
-
 DALIDataloader = MyCustomDataloader(Loader)
 
 
 print('Initializing Network...')
 
-num_hidden_channels = 32
-
 #Initialize the network which will produce a coarse alpha (1 chan), foreground (3 chan) confidence map (1 chan), and a number of hidden channels (num_hidden_channels chan)...
-coarse = CoarseMatteGenerator(output_channels = num_hidden_channels + 5).train().to(device)
+coarse = CoarseMatteGenerator().train().to(device)
 
 use_amp = False
 
 #track how many batches have been done for things like periodic outputs and eventually scheduling.
 iteration = 0
 
-coarse_learning_rate = 0.00001
-coarse_opt = torch.optim.Adam(coarse.parameters(), lr = coarse_learning_rate)
+coarse_parameters = [\
+	{'params': coarse.Encoder.parameters(), 'lr': 0.0001},\
+	{'params': coarse.ASPP.parameters(), 'lr': 0.0005},\
+	{'params': coarse.Decoder.parameters(), 'lr': 0.0005}\
+	]
+
+coarse_opt = torch.optim.Adam(coarse_parameters, lr = 0.0001)
 
 print('\nTraining...')
+
+L1Loss = nn.L1Loss()
+MSELoss = nn.MSELoss()
 
 for iteration in tqdm(range(600000)):
 
@@ -104,7 +103,6 @@ for iteration in tqdm(range(600000)):
 
 		#Composite the augmented foreground onto the augmented background according to the augmented alpha.
 		composite_tensor = composite(real_background, real_foreground, real_alpha)
-		
 
 		#return the input tensor (composite plus b-prime) and the alpha_tensor. The input tensor is just a bunch of channels, the real_alpha is the central (singular) alpha
 		#corresponding to the target frame.
@@ -120,12 +118,11 @@ for iteration in tqdm(range(600000)):
 		fake_coarse_alpha = torch.clamp(fake_coarse[:, 0:1], 0, 1)
 		fake_coarse_foreground_residual = fake_coarse[:, 1:4]
 		fake_coarse_error = torch.clamp(fake_coarse[:, 4:5], 0, 1)
+		fake_coarse_hidden_channels = torch.relu(fake_coarse[:,5:])
 
 		real_coarse_composite = F.interpolate(composite_tensor, size = [composite_tensor.shape[-2]//4, composite_tensor.shape[-1]//4])
 		fake_coarse_foreground = torch.clamp(real_coarse_composite + fake_coarse_foreground_residual, 0, 1)
-
-		if(num_hidden_channels > 0):
-			fake_coarse_hidden_channels = torch.relu(fake_coarse[:,5:])
+		
 
 		#The real error map is calculated as the squared difference between the real alpha and the fake alpha.
 		real_coarse_error = torch.clamp(torch.abs(real_coarse_alpha.detach()-fake_coarse_alpha.detach()), 0, 1)
@@ -140,10 +137,10 @@ for iteration in tqdm(range(600000)):
 
 	#The loss of the coarse network is L1 loss of coarse alpha, L1 loss of coarse error, and L1 loss (only where real_alpha >0.1) of coarse foreground.
 	coarse_loss = \
-	torch.mean(torch.abs(fake_coarse_alpha - real_coarse_alpha)) + \
-	torch.mean(torch.square(fake_coarse_error - real_coarse_error)) + \
-	torch.mean(torch.abs((real_coarse_foreground * foreground_penalty_zone) - (fake_coarse_foreground * foreground_penalty_zone))) + \
-	torch.mean(torch.abs(coarse_sobel - real_sobel))
+	L1Loss(fake_coarse_alpha,real_coarse_alpha) + \
+	MSELoss(fake_coarse_error,real_coarse_error) + \
+	L1Loss((real_coarse_foreground * foreground_penalty_zone), (fake_coarse_foreground * foreground_penalty_zone)) + \
+	L1Loss(coarse_sobel,real_sobel)
 
 	#if it's before the training cutoff, then the loss is just for the coarse network.
 	coarse_opt.zero_grad()

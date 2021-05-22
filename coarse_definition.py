@@ -2,19 +2,40 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import Dataset, DataLoader
-from PIL import Image
-import time
-from tqdm import tqdm
-from train_utils import ResidualBlock, DecoderBlock
 
 
 class CoarseMatteGenerator(nn.Module):
 
-	def __init__(self, input_channels = 6, output_channels = 37):
+	def __init__(self):
+		super().__init__()
+
+		self.Encoder = Resnet50()
+
+		self.activation = nn.ReLU()
+	
+		self.ASPP = ASPP()
+
+		self.Decoder = Decoder()
+
+
+	def forward(self, input_tensor):
+
+
+		X4, X2, X1, X, input_tensor = self.Encoder(input_tensor)		
+
+		aspp_result = self.ASPP(X4)
+
+		final_logits = self.Decoder(aspp_result, X2, X1, X, input_tensor)
+	
+		return final_logits
+
+
+class Resnet50(nn.Module):
+
+	def __init__(self):
 		super().__init__()
 		#enters at 540 x 960
-		self.conv1 = nn.Conv2d(input_channels, 64, kernel_size = 7, stride = 2, padding = 3)
+		self.conv1 = nn.Conv2d(6, 64, kernel_size = 7, stride = 2, padding = 3)
 		self.max_pool = nn.MaxPool2d(kernel_size = 3, stride = 2, padding = 1)
 
 		#now 270 x 480
@@ -41,41 +62,7 @@ class CoarseMatteGenerator(nn.Module):
 		self.res15 = ResidualBlock(1024, 512, 1024, dilation = 2)
 		self.res16 = ResidualBlock(1024, 512, 1024, dilation = 2)
 
-		self.aspp1 = nn.Conv2d(1024, 256, kernel_size = 1)
-		self.bn1 = nn.BatchNorm2d(256)
-		self.aspp2 = nn.Conv2d(1024, 256, kernel_size = 3, dilation = 3, padding = 3)
-		self.bn2 = nn.BatchNorm2d(256)
-		self.aspp3 = nn.Conv2d(1024, 256, kernel_size = 3, dilation = 6, padding = 6)
-		self.bn3 = nn.BatchNorm2d(256)
-		self.aspp4 = nn.Conv2d(1024, 256, kernel_size = 3, dilation = 9, padding = 9)
-		self.bn4 = nn.BatchNorm2d(256)
-
-		self.activation = nn.ReLU()
-		
-		self.global_average = nn.AvgPool2d(kernel_size = [5, 8])
-		self.global_feature_conv = nn.Conv2d(1024, 256, kernel_size = 1)
-		self.bn5 = nn.BatchNorm2d(256)
-
-		self.concat_crunch = nn.Conv2d(1280, 256, kernel_size = 1)
-
-		#We'll upsample first back up to 68 x 120
-		self.decode1 = DecoderBlock(256 + 512, 128)
-		#then 135 x 240
-		self.decode2 = DecoderBlock(128 + 256, 64)
-		#then 270 x 480
-		self.decode3 = DecoderBlock(64 + 64, 48)
-
-		#and finally to 540 x 960
-		self.final_conv = nn.Conv2d(48 + 6, output_channels, kernel_size = 3, padding = 1)
-
-
 	def forward(self, input_tensor):
-
-		size4 = input_tensor.shape[:-2]
-		size8 = [x // 2 for x in size4]
-		size16 = [x // 2 for x in size8]
-		size32 = [x // 2 for x in size16]
-		size64 = [x // 2 for x in size32]
 
 		X = self.conv1(input_tensor)
 		X = self.max_pool(X)
@@ -100,10 +87,37 @@ class CoarseMatteGenerator(nn.Module):
 		X4 = self.res15(X4)
 		X4 = self.res16(X4)
 
-		aspp1 = self.aspp1(X4)
-		aspp2 = self.aspp2(X4)
-		aspp3 = self.aspp3(X4)
-		aspp4 = self.aspp4(X4)
+		return(X4, X2, X1, X, input_tensor)
+
+
+class ASPP(nn.Module):		
+
+	def __init__(self):
+		super().__init__()
+
+		self.aspp1 = nn.Conv2d(1024, 256, kernel_size = 1)
+		self.bn1 = nn.BatchNorm2d(256)
+		self.aspp2 = nn.Conv2d(1024, 256, kernel_size = 3, dilation = 3, padding = 3)
+		self.bn2 = nn.BatchNorm2d(256)
+		self.aspp3 = nn.Conv2d(1024, 256, kernel_size = 3, dilation = 6, padding = 6)
+		self.bn3 = nn.BatchNorm2d(256)
+		self.aspp4 = nn.Conv2d(1024, 256, kernel_size = 3, dilation = 9, padding = 9)
+		self.bn4 = nn.BatchNorm2d(256)
+
+		self.global_average = nn.AvgPool2d(kernel_size = [5, 5])
+		self.global_feature_conv = nn.Conv2d(1024, 256, kernel_size = 1)
+		self.bn5 = nn.BatchNorm2d(256)
+
+		self.concat_crunch = nn.Conv2d(1280, 256, kernel_size = 1)
+
+		self.activation = nn.ReLU()
+
+	def forward(self, X):
+
+		aspp1 = self.aspp1(X)
+		aspp2 = self.aspp2(X)
+		aspp3 = self.aspp3(X)
+		aspp4 = self.aspp4(X)
 
 		aspp1 = self.bn1(aspp1)
 		aspp2 = self.bn2(aspp2)
@@ -115,7 +129,7 @@ class CoarseMatteGenerator(nn.Module):
 		aspp3 = self.activation(aspp3)
 		aspp4 = self.activation(aspp4)
 
-		global_features = self.global_average(X4)
+		global_features = self.global_average(X)
 		global_features = F.interpolate(global_features, size = aspp1.shape[-2:], mode = 'bilinear', align_corners = True)
 		global_features = self.global_feature_conv(global_features)
 		global_features = self.bn5(global_features)
@@ -123,6 +137,26 @@ class CoarseMatteGenerator(nn.Module):
 		aspp_concat = torch.cat([aspp1, aspp2, aspp3, aspp4, global_features], dim = 1)
 		aspp_result = self.concat_crunch(aspp_concat)
 		aspp_result = self.activation(aspp_result)
+
+		return aspp_result
+
+
+class Decoder(nn.Module):
+
+	def __init__(self):
+		super().__init__()
+
+		#We'll upsample first back up to 68 x 120
+		self.decode1 = DecoderBlock(256 + 512, 128)
+		#then 135 x 240
+		self.decode2 = DecoderBlock(128 + 256, 64)
+		#then 270 x 480
+		self.decode3 = DecoderBlock(64 + 64, 48)
+
+		#and finally to 540 x 960
+		self.final_conv = nn.Conv2d(48 + 6, 37, kernel_size = 3, padding = 1)
+
+	def forward(self, aspp_result, X2, X1, X, input_tensor):
 
 		decode1 = F.interpolate(aspp_result, size = X2.shape[-2:], mode = 'bilinear', align_corners = True)
 		decode1 = torch.cat([decode1, X2], dim = 1)
@@ -139,50 +173,77 @@ class CoarseMatteGenerator(nn.Module):
 		final_logits = F.interpolate(decode3, size = input_tensor.shape[-2:], mode = 'bilinear', align_corners = True)
 		final_logits = torch.cat([final_logits, input_tensor], dim = 1)
 		final_logits = self.final_conv(final_logits)
-	
+
 		return final_logits
 
 
+class ResidualBlock(nn.Module):
 
-class RefinementNetwork(nn.Module):
+	def __init__(self, \
+		input_channels, bottleneck_channels, output_channels,\
+		dilation = None, projection = False, downsample = False):
 
-	def __init__(self, coarse_channels = 37, input_channels = 6, patch_size = 8):
 		super().__init__()
 
-		self.input_channels = input_channels
-		self.coarse_channels = coarse_channels
-		self.concat_channels = self.input_channels + self.coarse_channels
 
-		#subtracting one from the input channels here because we aren't using the error map as an input
-		self.conv1 = nn.Conv2d(self.concat_channels, 24, kernel_size = 3)
-		self.conv2 = nn.Conv2d(24, 16, kernel_size = 3)
-		self.conv3 = nn.Conv2d(16 + self.input_channels, 12, kernel_size = 3)
-		self.conv4 = nn.Conv2d(12, 4, kernel_size = 3)
+		self.intake = nn.Conv2d(input_channels, bottleneck_channels, kernel_size = 1, stride = 2 if downsample else 1)
+		self.bn1 = nn.BatchNorm2d(bottleneck_channels)
 
-		self.bn1 = nn.BatchNorm2d(24)
-		self.bn2 = nn.BatchNorm2d(16)
-		self.bn3 = nn.BatchNorm2d(12)
+		if(dilation == None):
+			self.crunch = nn.Conv2d(bottleneck_channels, bottleneck_channels, kernel_size = 3, padding = 1)
+		else:
+			self.crunch = nn.Conv2d(bottleneck_channels, bottleneck_channels, kernel_size = 3,\
+			dilation = dilation, padding = dilation)
+		
+		self.bn2 = nn.BatchNorm2d(bottleneck_channels)
+		self.outlet = nn.Conv2d(bottleneck_channels, output_channels, kernel_size = 1)
+		self.bn3 = nn.BatchNorm2d(output_channels)
+
+		self.projection = projection
+		if(self.projection):
+			self.projection_conv = nn.Conv2d(input_channels, output_channels, kernel_size = 1, stride = 2 if downsample else 1)
 
 		self.activation = nn.ReLU()
 
+	def forward(self, X):
 
-	def forward(self, start_patches, middle_patches):
+		skipX = X
 
-		z1 = self.conv1(start_patches)
-		z1 = self.bn1(z1)
-		x1 = self.activation(z1)
+		X = self.intake(X)
+		X = self.bn1(X)
+		X = self.activation(X)
 
-		z2 = self.conv2(x1)
-		z2 = self.bn2(z2)
-		x2 = self.activation(z2)
-		x2 = F.interpolate(x2, size = middle_patches.shape[-2:])
+		X = self.crunch(X)
+		X = self.bn2(X)
+		X = self.activation(X)
 
-		z3 = torch.cat([x2, middle_patches], 1)
-		z3 = self.conv3(z3)
-		z3 = self.bn3(z3)
-		x3 = self.activation(z3)
+		X = self.outlet(X)
+		X = self.bn3(X)
 
-		z4 = self.conv4(x3)
+		if(self.projection):
+			skipX = self.projection_conv(skipX)
 
-		return z4
+		X = X + skipX
+
+		X = self.activation(X)
+
+		return X
+
+
+class DecoderBlock(nn.Module):
+
+	def __init__(self, input_channels, output_channels):
+		super().__init__()
+
+		self.conv = nn.Conv2d(input_channels, output_channels, kernel_size = 3, padding = 1, bias = False)
+		self.bn = nn.BatchNorm2d(output_channels)
+		self.activation = nn.ReLU()
+
+	def forward(self, X):
+
+		X = self.conv(X)
+		X = self.bn(X)
+		X = self.activation(X)
+
+		return X
 

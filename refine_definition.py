@@ -1,8 +1,6 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import time
-from tqdm import tqdm
 
 class RefinementNetwork(nn.Module):
 
@@ -24,7 +22,6 @@ class RefinementNetwork(nn.Module):
 		self.bn3 = nn.BatchNorm2d(12)
 
 		self.activation = nn.ReLU()
-
 
 	def forward(self, start_patches, middle_patches):
 
