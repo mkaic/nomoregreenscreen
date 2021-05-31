@@ -16,10 +16,15 @@ from PIL import Image
 import argparse
 import time
 import cv2 as cv
+import skimage.transform as sk_transform
+from skimage.util import img_as_ubyte
 
 import os
-from coarse_definition import CoarseMatteGenerator
-from refine_definition import RefinementNetwork
+#from coarse_definition import CoarseMatteGenerator
+#from refine_definition import RefinementNetwork
+
+from model_definition import CoarseMatteGenerator, RefinementNetwork
+
 from train_utils import get_image_patches, replace_image_patches, color_ramp
 
 device = "cuda"
@@ -61,7 +66,7 @@ source_len = len(source_list)
 background_list = sorted(os.listdir('cached_frames/background/'))
 background_len = len(background_list)
 
-detector = cv.ORB_create(1000)
+detector = cv.ORB_create()
 
 
 #LOOP over all source PNG frames and detect and compute features for them
@@ -119,6 +124,7 @@ class UserInputDataset(Dataset):
 		source_name = source_list[source_idx]
 
 		source_img = np.asarray(Image.open(f'cached_frames/source/{source_name}'))
+		#print(f'src_mean {np.mean(source_img)}')
 
 		#tick = time.time()
 		best_score = 10000
@@ -135,22 +141,30 @@ class UserInputDataset(Dataset):
 			list(range(search_start_idx, search_end_idx, self.stride)),\
 			background_list[search_start_idx : search_end_idx : self.stride]):
 			
-			matches = matcher.match(background_des_list[background_idx], source_des_list[source_idx], None)
+			matches = matcher.knnMatch(background_des_list[background_idx], source_des_list[source_idx], k = 2)
 
 			#sort the matches by lowest distance up. the lambda is just a little function that reads like this:
 			# function such that for each item x, retrieve the distance property of x.
-			matches.sort(key = lambda x: x.distance, reverse = False)
-			top_matches = matches[:int(len(matches)*0.25)]
+			top_matches = []
+
+			for match in matches:
+
+				best = match[0]
+				worst = match[1]
+
+				if(best.distance < 0.75 * worst.distance):
+
+					top_matches.append(best)
+
+			#print(len(top_matches))
 
 			source_kp = source_kp_list[source_idx]
-			source_coords = np.float32([source_kp[match.trainIdx].pt for match in top_matches]).reshape(-1, 1, 2)
+			source_coords = np.float32([source_kp[match.trainIdx].pt for match in top_matches]).reshape(-1, 2)
 
 			background_kp = background_kp_list[background_idx]
-			background_coords = np.float32([background_kp[match.queryIdx].pt for match in top_matches]).reshape(-1, 1, 2)
+			background_coords = np.float32([background_kp[match.queryIdx].pt for match in top_matches]).reshape(-1, 2)
 
-			H, inliers = cv.findHomography(background_coords, source_coords, cv.RANSAC, 5.0)
-
-			inliers_total = np.sum(inliers)
+			poly_tform = sk_transform.estimate_transform(ttype='polynomial', src=source_coords, dst=background_coords, order=2)
 
 			background_img = np.asarray(Image.open(f'cached_frames/background/{background_name}'))
 
@@ -158,15 +172,17 @@ class UserInputDataset(Dataset):
 
 
 			h, w = source_img.shape[:2]
-			warped_background = cv.warpPerspective(background_img, H, (w,h))
-			warped_mask = cv.warpPerspective(np.ones((h,w)), H, (w,h))
+			warped_background = img_as_ubyte(sk_transform.warp(background_img, poly_tform))
+			warped_mask = img_as_ubyte(sk_transform.warp(np.ones((h,w)), poly_tform))
+
+
 
 			mean_pixel_error = np.mean(np.abs(warped_background - source_img) * np.expand_dims(warped_mask, axis = 2))
 
-			warped_background[warped_mask != 1] = source_img[warped_mask != 1]
+			#warped_background[warped_mask != 1] = source_img[warped_mask != 1]
 			overall_coverage = np.mean(warped_mask) ** 30 * 100
 
-			score = mean_pixel_error - (overall_coverage * 2) - (inliers_total/2)
+			score = mean_pixel_error - (overall_coverage * 2)
 
 			#print(int(mean_pixel_error), int(overall_coverage), int(inliers_total))
 
@@ -175,10 +191,12 @@ class UserInputDataset(Dataset):
 				best_unwarped_background = background_img
 				best_background = warped_background
 				best_score = score
+				best_mask = warped_mask
 		
 		background_PIL = Image.fromarray(best_background)
 		source_PIL = Image.fromarray(source_img)
 		unwarped_PIL = Image.fromarray(best_unwarped_background)
+		mask_PIL = Image.fromarray(best_mask)
 
 		background_tensor = transforms.ToTensor()(background_PIL)
 		source_tensor = transforms.ToTensor()(source_PIL)
@@ -187,6 +205,7 @@ class UserInputDataset(Dataset):
 		background_PIL.save(f'alignment_test/{source_idx}background.jpg')
 		source_PIL.save(f'alignment_test/{source_idx}source.jpg')
 		unwarped_PIL.save(f'alignment_test/{source_idx}unwarped.jpg')
+		#mask_PIL.save(f'alignment_test/{source_idx}mask.jpg')
 
 		#print(time.time() - tick)
 		
