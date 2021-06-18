@@ -171,45 +171,23 @@ class UserInputDataset(Dataset):
 			background_coords = np.float32([background_kp[match.queryIdx].pt for match in top_matches]).reshape(-1, 2)
 
 			#print(len(source_coords), len(background_coords))
-
-		
-
 			H, inliers = cv.findHomography(background_coords, source_coords, cv.RANSAC, 10.0)
 			bg_coords_warped = np.float32(cv.perspectiveTransform(background_coords.reshape(-1, 1, 2), H).reshape(-1, 2))
-			
-			bg_coords_warped_pruned = []
-			source_coords_pruned = []
-
-			for i in range(bg_coords_warped.shape[0]):
-
-				if\
-				(bg_coords_warped[i, 0] < 3*w//2 and bg_coords_warped[i, 0] > -w//2)\
-				and (bg_coords_warped[i, 1] < 3*h//2 and bg_coords_warped[i, 1] > -h//2):
-					bg_coords_warped_pruned.append(bg_coords_warped[i] + [w//2, h//2])
-					source_coords_pruned.append(source_coords[i] + [w//2, h//2])
-
-			bg_coords_warped_pruned = np.array(bg_coords_warped_pruned)
-			source_coords_pruned = np.array(source_coords_pruned)
-
 
 			#print(inliers[1])
 
 			background_img = np.asarray(Image.open(f'cached_frames/background/{background_name}'))
 			#print(background_img.shape)
-			padded_background_img = np.pad(background_img, ((h//2,),(w//2,),(0,)), 'reflect')
-			#print('postpad',padded_background_img.shape)
 
-			warp_size = (w+((w//2)*2),h+((h//2)*2))
+			warp_size = (w,h)
 			#print('warpsize',warp_size)
 
-			warped_background = cv.warpPerspective(padded_background_img, H, dsize=warp_size)
-			warped_mask = cv.warpPerspective(np.ones(padded_background_img.shape), H, dsize=warp_size)
+			warped_background = cv.warpPerspective(background_img, H, dsize=warp_size)
+			warped_mask = cv.warpPerspective(np.ones(background_img.shape), H, dsize=warp_size)
 
-			padded_source_img = np.pad(source_img, ((h//2,),(w//2,),(0,)), 'reflect')
-			#print('source',padded_source_img.shape)
-			mean_pixel_error = np.mean(np.abs(warped_background - padded_source_img))
+			mean_pixel_error = np.mean(np.abs(warped_background - source_img))
 
-			warped_background[warped_mask != 1] = padded_source_img[warped_mask != 1]
+			warped_background[warped_mask != 1] = source_img[warped_mask != 1]
 
 			score = mean_pixel_error
 
@@ -223,56 +201,8 @@ class UserInputDataset(Dataset):
 				new_background_coords = np.float32(bg_coords_warped_pruned)
 				new_source_coords = np.float32(source_coords_pruned)
 
-		bounding_rect = (0, 0, 2*w, 2*h)
-
-
-
-		subdiv_object = cv.Subdiv2D(bounding_rect)
-		#print(len(list(new_background_coords)), list(new_background_coords)[1].shape)
-		subdiv_object.insert(list(new_background_coords))
-		triangles = subdiv_object.getTriangleList()
-
-		best_background_copy = np.copy(best_background)
-		#print(best_background.shape)
-
-		
-		best_background_check = best_background[h//2:3*h//2, w//2:3*w//2]
 		background_PIL = Image.fromarray(best_background_check)
 		background_PIL.save(f'alignment_test/{source_idx}chomography.jpg')
-
-		
-		
-		for x1, y1, x2, y2, x3, y3 in triangles:
-
-			#background_coords == point returns where values match up with points in list
-			#.all() finds where *both* coordinates match
-			#.nonzero() finds the index of the Trues from .all(), and to get the index we have to get [0][0] of this. Google np.nonzero()
-			
-
-			#print([(new_background_coords == point).all(axis=1) for point in ((x1, y1), (x2, y2), (x3, y3))])
-			#print((new_background_coords == point).all(axis=1))
-			indices = [(new_background_coords == point).all(axis=1).nonzero()[0][0] for point in ((x1, y1), (x2, y2), (x3, y3))]
-			background_triangle_coords = new_background_coords[indices]
-			source_triangle_coords = new_source_coords[indices]				
-
-			bg_img_cropped, bg_triangle_rel = self.crop_to_triangle(best_background, background_triangle_coords)
-			source_img_cropped, source_triangle_rel = self.crop_to_triangle(best_background_copy, source_triangle_coords)
-			#black_cropped, black_triangle_rel = self.crop_to_triangle(black, source_triangle_coords)
-
-			transform = cv.getAffineTransform(np.float32(bg_triangle_rel), np.float32(source_triangle_rel))
-
-			
-			bg_crop_warped = cv.warpAffine(bg_img_cropped, transform, (source_img_cropped.shape[1],source_img_cropped.shape[0]), None, flags=cv.INTER_LINEAR, borderMode=cv.BORDER_REFLECT_101)
-			
-
-			mask = np.zeros(source_img_cropped.shape, dtype = np.uint8)
-			cv.fillConvexPoly(mask, np.int32(source_triangle_rel), (1.0, 1.0, 1.0), 16, 0)
-			source_img_cropped *= (1 - mask)
-			source_img_cropped += (bg_crop_warped * mask)
-
-		best_background = best_background[h//2:3*h//2, w//2:3*w//2]
-		background_PIL = Image.fromarray(best_background)
-		source_PIL = Image.fromarray(source_img)
 
 		unwarped_PIL = Image.fromarray(best_unwarped_background)
 
@@ -289,19 +219,6 @@ class UserInputDataset(Dataset):
 		print(source_tensor.shape, background_tensor.shape)
 		return source_tensor, background_tensor
 
-	def crop_to_triangle(self, img, triangle):
-
-		box = cv.boundingRect(triangle)
-
-		box_x1 = box[0]
-		box_y1 = box[1]
-		box_x2 = box[2]
-		box_y2 = box[3]
-
-		cropped_img = img[box_y1 : box_y1 + box_y2, box_x1 : box_x1 + box_x2]
-		triangle_relative = [(point[0] - box_x1, point[1] - box_y1) for point in triangle]
-
-		return cropped_img, triangle_relative
 
 
 
