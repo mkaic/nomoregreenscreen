@@ -11,8 +11,9 @@ import os
 from tqdm import tqdm
 from coarse_definition import CoarseMatteGenerator
 from refine_definition import RefinementNetwork
-from dali_dataloader import AugmentationPipeline4K, ImageOpener
-from nvidia.dali.plugin.pytorch import DALIGenericIterator
+from matte_dataset import MatteDataset
+#from dali_dataloader import AugmentationPipeline4K, ImageOpener
+#from nvidia.dali.plugin.pytorch import DALIGenericIterator
 import pytorch_lightning as pl
 from train_utils import *
 from kornia.filters import sobel
@@ -98,6 +99,13 @@ class LightningModel(pl.core.lightning.LightningModule):
 	def training_step(self, batch, batch_idx):
 
 		real_background, real_foreground, real_bprime, real_alpha = batch
+
+		size = (np.random.randint(1080, 2161), np.random.randint(1920, 3841))
+
+		real_background = TF.center_crop(real_background, size)
+		real_foreground = TF.center_crop(real_foreground, size)
+		real_bprime = TF.center_crop(real_bprime, size)
+		real_alpha = TF.center_crop(real_alpha, size)
 
 		#Composite the augmented foreground onto the augmented background according to the augmented alpha.
 		composite_tensor = composite(real_background, real_foreground, real_alpha)
@@ -205,168 +213,26 @@ class LightningModel(pl.core.lightning.LightningModule):
 		return loss
 
 
-	def prepare_data(self):
-
-		batch_size = self.batch_size
-
-		#Initialize the dataset and the loader to feed the data to the network.
-
-		ImageFeeder = ImageOpener(\
-			fg_dir = 'dataset/train/fgr/', \
-			bg_dir = 'dataset/train/bgr/', \
-			alpha_dir = 'dataset/train/pha/',
-			batch_size = batch_size)
-
-		Pipeline4K = AugmentationPipeline4K(\
-			dataset = ImageFeeder, \
-			num_threads = 4, \
-			device_id = 0, \
-			batch_size = batch_size)
-
-		Pipeline4K.build()
-
-		class LightningWrapper(DALIGenericIterator):
-
-			def __init__(self, *kargs, **kvargs):
-				super().__init__(*kargs, **kvargs)
-
-			def __next__(self):
-
-				tensor_dict = super().__next__()[0]
-
-				fg = tensor_dict['fg'].permute(0,3,1,2)
-				bg = tensor_dict['bg'].permute(0,3,1,2)
-				bprime = tensor_dict['bprime'].permute(0,3,1,2)
-				alpha = tensor_dict['alpha'].permute(0,3,1,2)
-				alpha = alpha[:, :1]
-
-				bg = bg.float()/256
-				fg = fg.float()/256
-				bprime = bprime.float()/256
-				alpha = alpha.float()/256
-
-				if(np.random.randint(0, 101) < 30):
-
-					bg = F.interpolate(bg, size = [bg.shape[-2]//2,bg.shape[-1]//2])
-					fg = F.interpolate(fg, size = [fg.shape[-2]//2,fg.shape[-1]//2])
-					bprime = F.interpolate(bprime, size = [bprime.shape[-2]//2,bprime.shape[-1]//2])
-					alpha = F.interpolate(alpha, size = [alpha.shape[-2]//2,alpha.shape[-1]//2])
-
-
-				crop_chance = np.random.randint(0, 101) > 25
-
-				crop_w = 3840
-				crop_h = 2160
-
-				if(crop_chance):
-					crop_w = np.random.randint(bg.shape[-1]//2.5, bg.shape[-1])
-					crop_h = np.random.randint(bg.shape[-2]*2//3, bg.shape[-2])
-
-				bg = TF.center_crop(bg, output_size = [crop_h, crop_w])
-				fg = TF.center_crop(fg, output_size = [crop_h, crop_w])
-				bprime = TF.center_crop(bprime, output_size = [crop_h, crop_w])
-				alpha = TF.center_crop(alpha, output_size = [crop_h, crop_w])
-
-				png = torch.cat([fg, alpha], dim = 1)
-
-				bg_trans_x = np.random.randint(-100, 100)
-				bg_trans_y = np.random.randint(-100, 100)
-				bg_shear_x = np.random.randint(-5, 6)
-				bg_shear_y = np.random.randint(-5, 6)
-				bg_scale = np.random.randint(10, 13) / 10
-
-				aug_bg_params = {
-
-					'img': bg,
-					'angle': 0,
-					'translate':[
-						bg_trans_x,
-						bg_trans_y
-					],
-					'shear':[
-						bg_shear_x,
-						bg_shear_y
-					],
-					'scale': bg_scale
-
-				}
-				aug_bg_tensor = TF.affine(**aug_bg_params)
-
-				aug_bprime_params = {
-
-					'img': bprime,
-					'angle': 0,
-					'translate':[
-						bg_trans_x + np.random.randint(-10, 11),
-						bg_trans_y + np.random.randint(-10, 11)
-					],
-					'shear':[
-						bg_shear_x + np.random.randint(-5, 6),
-						bg_shear_y + np.random.randint(-5, 6)
-					],
-					'scale': bg_scale + np.random.randint(-1, 2) / 100
-
-				}
-				aug_bprime_tensor = TF.affine(**aug_bprime_params)
-
-				aug_png_params = {
-
-					'img': png,
-					'angle': 0,
-					'translate':[
-						np.random.randint(-100, 101),
-						np.random.randint(-100, 101)
-					],
-					'shear':[
-						np.random.randint(-15, 16),
-						np.random.randint(-15, 16)
-					],
-					'scale': np.random.randint(3, 15) / 10
-
-				}
-				aug_png_tensor = TF.affine(**aug_png_params)
-				
-				aug_fg_tensor = aug_png_tensor[:, :3]
-				aug_alpha_tensor = aug_png_tensor[:, 3:4]
-
-
-				if(np.random.randint(0, 10) > 6):
-					shadow_x = np.random.randint(0, 200)
-					shadow_y = np.random.randint(0, 200)
-					shadow_shear = np.random.randint(-30, 30)
-					shadow_rotation = np.random.randint(-30, 30)
-					shadow_strength = np.random.randint(20, 80) / 100
-					shadow_blur = np.random.randint(2, 16) * 2 + 1
-
-					shadow_stamp = TF.affine(aug_alpha_tensor, translate = [shadow_x, shadow_y], shear = shadow_shear, angle = shadow_rotation, scale = 1)
-					shadow_stamp = TF.gaussian_blur(shadow_stamp, shadow_blur)
-					shadow_stamp = shadow_stamp * shadow_strength
-
-					aug_bg_tensor = aug_bg_tensor - (aug_bg_tensor * shadow_stamp)
-
-				return(aug_bg_tensor, aug_fg_tensor, aug_bprime_tensor, aug_alpha_tensor)
-
-			def __len__(self):
-
-				return(25000)
-
-		self.DALIDataloader = LightningWrapper(pipelines = [Pipeline4K], output_map = ['bg', 'fg', 'bprime', 'alpha'])
-
-		return self.DALIDataloader
-
-	def train_dataloader(self):
-
-		return self.DALIDataloader
-
 
 if 'PL_TRAINER_GPUS' in os.environ:
 	os.environ.pop('PL_TRAINER_GPUS')
+
+params = {
+	
+	'bg_dir':'dataset/train/bgr/',
+	'fg_dir':'dataset/train/fgr/',
+	'alpha_dir':'dataset/train/pha/'
+
+}
+
+dataset = MatteDataset(**params)
+dataloader = DataLoader(dataset, num_workers=0, batch_size = 1, pin_memory = True, shuffle = True)
 
 model = LightningModel(train_refine = False, batch_size = 1)
 
 trainer = pl.Trainer(gpus=1, distributed_backend='ddp', default_root_dir='./model_saves', max_epochs = 100)
 
-trainer.fit(model)
+trainer.fit(model, dataloader)
 
 
 
